@@ -40,26 +40,74 @@ td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); 
 <script>
 const msg = document.querySelector('#msg');
 let data = null;
-let managementKey = readPanelKey();
-function readPanelKey() {
-  const raw = localStorage.getItem('cli-proxy-auth');
-  if (!raw) return '';
-  let parsed = null;
-  if (raw.indexOf('enc::v2::') === 0 || raw.indexOf('enc::v1::') === 0) {
-    const v1 = raw.indexOf('enc::v1::') === 0;
-    const secret = 'cli-proxy-api-webui::secure-storage|' + location.host + (v1 ? '|' + navigator.userAgent : '');
-    try {
-      const binary = atob(raw.slice(9));
-      const key = new TextEncoder().encode(secret);
-      const out = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i) ^ key[i % key.length];
-      parsed = JSON.parse(new TextDecoder().decode(out));
-    } catch (error) { return ''; }
-  } else {
-    try { parsed = JSON.parse(raw); } catch (error) { return ''; }
+let managementKey = readPanelKey() || readParentKey();
+function decodeAuth(raw) {
+  if (!raw) return null;
+  if (raw.indexOf('enc::v2::') !== 0 && raw.indexOf('enc::v1::') !== 0) {
+    try { return JSON.parse(raw); } catch (error) { return null; }
   }
+  const v1 = raw.indexOf('enc::v1::') === 0;
+  const masks = v1
+    ? ['cli-proxy-api-webui::secure-storage|' + location.host + '|' + navigator.userAgent]
+    : ['cli-proxy-api-webui::secure-storage|' + location.host, 'cli-proxy-api-webui::secure-storage|v2|' + location.host];
+  let binary = '';
+  try { binary = atob(raw.slice(9)); } catch (error) { return null; }
+  for (let n = 0; n < masks.length; n++) {
+    try {
+      const mask = new TextEncoder().encode(masks[n]);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i) ^ mask[i % mask.length];
+      return JSON.parse(new TextDecoder().decode(out));
+    } catch (error) {}
+  }
+  return null;
+}
+function readPanelKey() {
+  const parsed = decodeAuth(localStorage.getItem('cli-proxy-auth'));
   const state = parsed && parsed.state ? parsed.state : parsed;
   return state && state.managementKey ? state.managementKey : '';
+}
+function readParentKey() {
+  try {
+    if (!window.parent || window.parent === window) return '';
+    const root = window.parent.document.getElementById('root');
+    if (!root) return '';
+    const prop = Object.getOwnPropertyNames(root).find(name => name.indexOf('__reactContainer') === 0 || name.indexOf('__reactFiber') === 0);
+    if (!prop) return '';
+    const seen = new Set();
+    let found = '';
+    let nodes = 0;
+    function consider(value) {
+      if (!found && value && typeof value === 'object' && typeof value.managementKey === 'string' && value.managementKey.trim()) found = value.managementKey.trim();
+    }
+    function walk(node) {
+      if (!node || found || typeof node !== 'object' || seen.has(node) || nodes > 8000) return;
+      seen.add(node);
+      nodes++;
+      consider(node.memoizedState);
+      let hook = node.memoizedState;
+      for (let i = 0; hook && i < 60; i++) {
+        consider(hook.memoizedState);
+        consider(hook.baseState);
+        if (hook.memoizedState && typeof hook.memoizedState === 'object') {
+          consider(hook.memoizedState.value);
+          if (typeof hook.memoizedState.getSnapshot === 'function') {
+            try { consider(hook.memoizedState.getSnapshot()); } catch (error) {}
+          }
+        }
+        if (hook.queue) consider(hook.queue.value);
+        if (hook.queue && typeof hook.queue.getSnapshot === 'function') {
+          try { consider(hook.queue.getSnapshot()); } catch (error) {}
+        }
+        hook = hook.next;
+      }
+      walk(node.child);
+      walk(node.sibling);
+    }
+    const container = root[prop];
+    walk(container && container.current ? container.current : container);
+    return found;
+  } catch (error) { return ''; }
 }
 document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
@@ -67,7 +115,10 @@ document.querySelectorAll('.tab').forEach(tab => tab.onclick = () => {
   if (tab.dataset.tab === 'logs') loadLogs();
 });
 async function api(body) {
-  if (!managementKey) managementKey = prompt('面板没有记住管理密钥。登录时勾选记住密码后再打开，或在这里粘贴一次。') || '';
+  if (!managementKey) {
+    msg.textContent = '没有读到管理页的登录状态。请从 CPA 管理页的 Mistral 菜单打开。';
+    throw new Error('missing management session');
+  }
   const response = await fetch('/v0/management/mistral/api', {
     method:'POST', headers:{'content-type':'application/json','authorization':'Bearer '+managementKey},
     body: JSON.stringify(body)
