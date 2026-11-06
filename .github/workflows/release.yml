@@ -75,10 +75,7 @@ jobs:
           docker run --rm --platform linux/arm64 -v "$PWD:/src" -w /src \
             -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=arm64 \
             golang:1.26-bookworm sh -ec \
-            'apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && go test ./cmd/mistral && mkdir -p dist && go build -trimpath -buildvcs=false -buildmode=c-shared -ldflags="-s -w" -o dist/mistral.so ./cmd/mistral'
-          mv -f dist/mistral.so /tmp/mistral.arm64.so
-          mkdir -p dist
-          mv /tmp/mistral.arm64.so dist/mistral.so
+            'apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && go test ./cmd/mistral && go build -trimpath -buildvcs=false -buildmode=c-shared -ldflags="-s -w" -o dist/mistral.so ./cmd/mistral && chmod a+r dist/mistral.so'
       - name: Package Linux arm64
         shell: bash
         run: |
