@@ -54,7 +54,7 @@ The console tries to reuse the CPA management session. It reads `cli-proxy-auth`
 
 First-run order:
 
-1. Add a Mistral API key under Credentials, then click Check to confirm `GET /models` succeeds.
+1. Add a Mistral API key under Credentials, then click Check to confirm `GET /models` succeeds. If you do not have a key, click Create Vibe API key to open `https://chat.mistral.ai/code/extensions`.
 2. Under Models, choose a credential, click Fetch upstream models, select what you need, and add them.
 3. Point your client at CPA's address and CPA client key. Use the client-side model name from the mapping table.
 

@@ -14,6 +14,8 @@ nav { display:flex; gap:6px; padding:12px 28px; flex-wrap:wrap; }
 button, select, input { font:inherit; }
 button { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:6px 11px; cursor:pointer; color:var(--ink); }
 button:hover { border-color:#c8c3bd; }
+a.button { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line); background:var(--card); border-radius:8px; padding:6px 11px; color:var(--ink); text-decoration:none; }
+a.button:hover { border-color:#c8c3bd; }
 button.danger { color:var(--bad); }
 button:disabled { opacity:.45; cursor:not-allowed; }
 .tab { border:1px solid var(--line); background:var(--card); border-radius:8px; padding:7px 12px; cursor:pointer; }
@@ -257,7 +259,8 @@ function renderCredentials() {
     + '<input id="c-pri" type="number" min="0" max="1000" value="' + (editing ? editing.priority : 10) + '" style="width:90px">'
     + '<button id="c-save">' + (editing ? '保存修改' : '添加') + '</button>'
     + (editing ? '<button id="c-cancel">取消</button>' : '')
-    + '</div><div class="muted" style="margin-top:8px">添加后可以点「检测」调用 GET /models 验证 key。停用的凭据不会参与调度。</div>';
+    + '</div><div class="muted" style="margin-top:8px">添加后可以点「检测」调用 GET /models 验证 key。停用的凭据不会参与调度。</div>'
+    + '<div class="form"><a class="button" href="https://chat.mistral.ai/code/extensions" target="_blank" rel="noopener noreferrer">创建 Vibe API key</a><span class="muted">在 Mistral 的 Code extensions 页面生成 key，再粘贴到上面的 API key 输入框。</span></div>';
   document.querySelector('#c-save').onclick = saveCredential;
   const cancel = document.querySelector('#c-cancel');
   if (cancel) cancel.onclick = () => { editingCredential = ''; render(); };

@@ -54,7 +54,7 @@ http://<cpa>/v0/resource/plugins/mistral/console
 
 第一次使用按这个顺序：
 
-1. 在「凭据」里添加 Mistral API key，点「检测」确认 `GET /models` 能通过。
+1. 在「凭据」里添加 Mistral API key，点「检测」确认 `GET /models` 能通过。没有 key 时点「创建 Vibe API key」，会打开 `https://chat.mistral.ai/code/extensions`。
 2. 在「模型」里选择凭据，点「拉取上游模型」，勾选要用的模型后添加。
 3. 在客户端填 CPA 的地址和 CPA 的客户端 key，模型名用映射表左边的客户端名称。
 
