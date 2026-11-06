@@ -3,3 +3,4 @@
 *.dylib
 *.dll
 dist/
+AGENTS.md
