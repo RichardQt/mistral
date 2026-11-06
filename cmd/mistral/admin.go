@@ -3,17 +3,26 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 )
 
 func publicState() map[string]any {
 	current := loadSettings()
+	dropMissingCredentialHealth(current)
 	creds := make([]map[string]any, 0, len(current.Credentials))
 	for _, item := range current.Credentials {
+		health := credentialHealthSnapshot(item.ID)
 		creds = append(creds, map[string]any{
 			"id": item.ID, "label": item.Label, "mask": maskKey(item.APIKey),
 			"has_key": item.APIKey != "", "disabled": item.Disabled, "priority": item.Priority,
+			"health": map[string]any{
+				"failures": health.Failures, "cooldown_until": formatTime(health.CooldownUntil),
+				"cooldown_left_seconds": cooldownLeft(health), "last_error": health.LastError,
+				"last_status": health.LastStatus, "last_checked": formatTime(health.LastChecked),
+				"last_latency_ms": health.LastLatencyMs,
+			},
 		})
 	}
 	models := make([]map[string]any, 0, len(current.Models))
@@ -25,118 +34,232 @@ func publicState() map[string]any {
 	_, active := current.pick()
 	return map[string]any{
 		"base_url": current.BaseURL, "log_retention": current.LogRetention,
-		"stream_idle_seconds": current.StreamIdleSeconds, "credentials": creds,
-		"models": models, "active": active, "configured": current.configured(),
+		"stream_idle_seconds": current.StreamIdleSeconds,
+		"failover":            current.Failover, "cooldown_seconds": current.CooldownSeconds,
+		"credentials": creds, "models": models, "active": active, "configured": current.configured(),
+		"stats": summarizeLogs(recentLogs(200)), "version": pluginVersion,
 	}
 }
 
-func handleAdmin(body []byte) (int, []byte) {
-	var req struct {
-		Action            string `json:"action"`
-		ID                string `json:"id"`
-		Label             string `json:"label"`
-		APIKey            string `json:"api_key"`
-		Disabled          bool   `json:"disabled"`
-		Priority          int    `json:"priority"`
-		UpstreamID        string `json:"upstream_id"`
-		Reasoning         string `json:"reasoning"`
-		BaseURL           string `json:"base_url"`
-		LogRetention      int    `json:"log_retention"`
-		StreamIdleSeconds int    `json:"stream_idle_seconds"`
-		Limit             int    `json:"limit"`
+func formatTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
 	}
+	return value.Format(time.RFC3339)
+}
+
+type adminRequest struct {
+	Action            string       `json:"action"`
+	ID                string       `json:"id"`
+	Label             string       `json:"label"`
+	APIKey            string       `json:"api_key"`
+	Disabled          *bool        `json:"disabled"`
+	Priority          *int         `json:"priority"`
+	UpstreamID        string       `json:"upstream_id"`
+	Reasoning         string       `json:"reasoning"`
+	BaseURL           string       `json:"base_url"`
+	LogRetention      int          `json:"log_retention"`
+	StreamIdleSeconds *int         `json:"stream_idle_seconds"`
+	Failover          *bool        `json:"failover"`
+	CooldownSeconds   *int         `json:"cooldown_seconds"`
+	Limit             int          `json:"limit"`
+	CredentialID      string       `json:"credential_id"`
+	Items             []modelInput `json:"items"`
+}
+
+func handleAdmin(body []byte, callbackID string) (int, []byte) {
+	var req adminRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		return 400, []byte(`{"error":"invalid json"}`)
+		return 400, jsonError("invalid json")
 	}
 	next := loadSettings()
 	switch req.Action {
 	case "", "state":
-		raw, _ := json.Marshal(publicState())
-		return 200, raw
+		return 200, jsonValue(publicState())
 	case "logs":
-		raw, _ := json.Marshal(map[string]any{"logs": recentLogs(req.Limit)})
-		return 200, raw
+		logs := recentLogs(clampInt(req.Limit, 1, 500))
+		return 200, jsonValue(map[string]any{"logs": logs, "summary": summarizeLogs(logs)})
 	case "put-credential":
-		id := strings.TrimSpace(req.ID)
-		if id == "" {
-			id = fmt.Sprintf("key-%d", time.Now().Unix()%100000)
-		}
-		found := false
-		for i := range next.Credentials {
-			if next.Credentials[i].ID != id {
-				continue
-			}
-			found = true
-			if strings.TrimSpace(req.Label) != "" {
-				next.Credentials[i].Label = strings.TrimSpace(req.Label)
-			}
-			if strings.TrimSpace(req.APIKey) != "" {
-				next.Credentials[i].APIKey = strings.TrimSpace(req.APIKey)
-			}
-			next.Credentials[i].Disabled = req.Disabled
-			next.Credentials[i].Priority = req.Priority
-		}
-		if !found {
-			if strings.TrimSpace(req.APIKey) == "" {
-				return 400, []byte(`{"error":"api key is required"}`)
-			}
-			label := strings.TrimSpace(req.Label)
-			if label == "" {
-				label = id
-			}
-			next.Credentials = append(next.Credentials, credential{ID: id, Label: label, APIKey: strings.TrimSpace(req.APIKey), Disabled: req.Disabled, Priority: req.Priority})
+		if status, message := putCredential(&next, req); status != 0 {
+			return status, jsonError(message)
 		}
 	case "delete-credential":
+		id := strings.TrimSpace(req.ID)
 		kept := next.Credentials[:0]
 		for _, item := range next.Credentials {
-			if item.ID != req.ID {
+			if item.ID != id {
 				kept = append(kept, item)
 			}
 		}
 		next.Credentials = kept
+		resetCredentialHealth(id)
 	case "put-model":
 		id := strings.TrimSpace(req.ID)
 		upstream := strings.TrimSpace(req.UpstreamID)
 		if id == "" || upstream == "" {
-			return 400, []byte(`{"error":"model id and upstream id are required"}`)
+			return 400, jsonError("model id and upstream id are required")
 		}
+		reasoning := strings.TrimSpace(req.Reasoning)
 		updated := false
 		for i := range next.Models {
 			if next.Models[i].Client == id {
 				next.Models[i].Upstream = upstream
-				next.Models[i].Reasoning = strings.TrimSpace(req.Reasoning)
+				next.Models[i].Reasoning = reasoning
 				updated = true
 			}
 		}
 		if !updated {
-			next.Models = append(next.Models, modelAlias{Client: id, Upstream: upstream, Reasoning: strings.TrimSpace(req.Reasoning)})
+			next.Models = append(next.Models, modelAlias{Client: id, Upstream: upstream, Reasoning: reasoning})
+		}
+	case "put-models":
+		if len(req.Items) == 0 || len(req.Items) > 200 {
+			return 400, jsonError("between 1 and 200 models are required")
+		}
+		existing := make(map[string]bool, len(next.Models))
+		for _, item := range next.Models {
+			existing[item.Client] = true
+		}
+		for _, item := range req.Items {
+			id := strings.TrimSpace(item.ID)
+			upstream := strings.TrimSpace(item.UpstreamID)
+			if id == "" || upstream == "" {
+				return 400, jsonError("model id and upstream id are required")
+			}
+			if existing[id] {
+				continue
+			}
+			existing[id] = true
+			next.Models = append(next.Models, modelAlias{Client: id, Upstream: upstream, Reasoning: strings.TrimSpace(item.Reasoning)})
 		}
 	case "delete-model":
+		id := strings.TrimSpace(req.ID)
 		kept := next.Models[:0]
 		for _, item := range next.Models {
-			if item.Client != req.ID {
+			if item.Client != id {
 				kept = append(kept, item)
 			}
 		}
 		next.Models = kept
 	case "put-settings":
-		if strings.TrimSpace(req.BaseURL) != "" {
-			next.BaseURL = strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+		if value := strings.TrimSpace(req.BaseURL); value != "" {
+			next.BaseURL = strings.TrimRight(value, "/")
 		}
 		if req.LogRetention > 0 {
 			next.LogRetention = req.LogRetention
 		}
-		if req.StreamIdleSeconds >= 0 {
-			next.StreamIdleSeconds = req.StreamIdleSeconds
+		if req.StreamIdleSeconds != nil {
+			next.StreamIdleSeconds = *req.StreamIdleSeconds
 		}
+		if req.Failover != nil {
+			next.Failover = *req.Failover
+		}
+		if req.CooldownSeconds != nil {
+			next.CooldownSeconds = *req.CooldownSeconds
+		}
+		if err := validateRuntimeSettings(next); err != nil {
+			return 400, jsonError(err.Error())
+		}
+	case "test-credential":
+		return 200, jsonValue(testCredentialAction(callbackID, next, strings.TrimSpace(req.ID)))
+	case "fetch-models":
+		return 200, jsonValue(fetchModelsAction(callbackID, next, strings.TrimSpace(req.CredentialID)))
+	case "test-model":
+		return 200, jsonValue(testModelAction(callbackID, next, strings.TrimSpace(req.ID), strings.TrimSpace(req.CredentialID)))
+	case "reset-cooldown":
+		resetCredentialHealth(strings.TrimSpace(req.ID))
 	default:
-		return 400, []byte(`{"error":"unknown action"}`)
+		return 400, jsonError("unknown action")
 	}
 	if err := persistSettings(next); err != nil {
-		raw, _ := json.Marshal(map[string]string{"error": err.Error()})
-		return 500, raw
+		return 500, jsonError(err.Error())
 	}
 	storeSettings(next)
-	raw, _ := json.Marshal(publicState())
-	return 200, raw
+	return 200, jsonValue(publicState())
+}
+
+type modelInput struct {
+	ID         string `json:"id"`
+	UpstreamID string `json:"upstream_id"`
+	Reasoning  string `json:"reasoning"`
+}
+
+func putCredential(next *settings, req adminRequest) (int, string) {
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		id = fmt.Sprintf("key-%d", time.Now().UnixNano())
+	}
+	label := strings.TrimSpace(req.Label)
+	key := strings.TrimSpace(req.APIKey)
+	if strings.ContainsAny(key, "\r\n") {
+		return 400, "api key must be a single line"
+	}
+	for i := range next.Credentials {
+		if next.Credentials[i].ID != id {
+			continue
+		}
+		item := &next.Credentials[i]
+		if label != "" {
+			item.Label = label
+		}
+		if key != "" && key != item.APIKey {
+			item.APIKey = key
+			resetCredentialHealth(item.ID)
+		}
+		if req.Disabled != nil {
+			item.Disabled = *req.Disabled
+		}
+		if req.Priority != nil {
+			item.Priority = clampInt(*req.Priority, 0, 1000)
+		}
+		if item.Label == "" {
+			item.Label = item.ID
+		}
+		return 0, ""
+	}
+	if key == "" {
+		return 400, "api key is required"
+	}
+	priority := 10
+	if req.Priority != nil {
+		priority = clampInt(*req.Priority, 0, 1000)
+	}
+	disabled := false
+	if req.Disabled != nil {
+		disabled = *req.Disabled
+	}
+	if label == "" {
+		label = id
+	}
+	next.Credentials = append(next.Credentials, credential{ID: id, Label: label, APIKey: key, Disabled: disabled, Priority: priority})
+	return 0, ""
+}
+
+func validateRuntimeSettings(current settings) error {
+	if current.BaseURL == "" {
+		return fmt.Errorf("base URL is required")
+	}
+	parsed, err := url.Parse(current.BaseURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("base URL must be an http or https URL")
+	}
+	if current.LogRetention < 10 || current.LogRetention > 5000 {
+		return fmt.Errorf("log retention must be between 10 and 5000")
+	}
+	if current.StreamIdleSeconds < 0 || current.StreamIdleSeconds > 3600 {
+		return fmt.Errorf("stream idle seconds must be between 0 and 3600")
+	}
+	if current.CooldownSeconds < 0 || current.CooldownSeconds > 3600 {
+		return fmt.Errorf("cooldown seconds must be between 0 and 3600")
+	}
+	return nil
+}
+
+func jsonValue(value any) []byte {
+	raw, _ := json.Marshal(value)
+	return raw
+}
+
+func jsonError(message string) []byte {
+	raw, _ := json.Marshal(map[string]string{"error": message})
+	return raw
 }

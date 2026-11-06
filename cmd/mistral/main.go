@@ -71,17 +71,23 @@ import (
 const abiVersion uint32 = 1
 
 var (
-	stateMu sync.Mutex
-	state   = defaultSettings()
+	stateMu         sync.Mutex
+	state           = defaultSettings()
+	upstreamRequest = httpDo
 )
 
 func loadSettings() settings {
 	stateMu.Lock()
 	defer stateMu.Unlock()
-	return state
+	current := state
+	current.Credentials = append([]credential(nil), current.Credentials...)
+	current.Models = append([]modelAlias(nil), current.Models...)
+	return current
 }
 
 func storeSettings(next settings) {
+	next.Credentials = append([]credential(nil), next.Credentials...)
+	next.Models = append([]modelAlias(nil), next.Models...)
 	stateMu.Lock()
 	state = next
 	stateMu.Unlock()
@@ -187,6 +193,10 @@ func registrationJSON() []byte {
 				{"Name": "base-url", "Type": "string", "Description": "Mistral API base URL, including /v1."},
 				{"Name": "api-key", "Type": "string", "Description": "Mistral API key."},
 				{"Name": "models", "Type": "string", "Description": "Client model names, optionally client=upstream."},
+				{"Name": "log-retention", "Type": "number", "Description": "Number of request log entries to keep."},
+				{"Name": "stream-idle-seconds", "Type": "number", "Description": "Cancel a stream after this many idle seconds. 0 disables it."},
+				{"Name": "failover", "Type": "bool", "Description": "Try the next credential when the upstream rejects the current one."},
+				{"Name": "cooldown-seconds", "Type": "number", "Description": "Base cooldown after a credential failure."},
 			},
 		},
 		"capabilities": map[string]any{
@@ -253,9 +263,18 @@ func execute(request []byte, stream bool) []byte {
 		return errorEnvelope("bad_request", err.Error(), http.StatusBadRequest)
 	}
 	current := loadSettings()
-	cred, ready := current.pick()
-	if !current.configured() || !ready {
+	if !current.configured() {
 		return errorEnvelope("not_configured", "add a Mistral credential and a model mapping in the Mistral console", http.StatusBadRequest)
+	}
+	candidates := current.candidates()
+	if len(candidates) == 0 {
+		return errorEnvelope("not_configured", "add a Mistral credential with an API key in the Mistral console", http.StatusBadRequest)
+	}
+	if !current.Failover {
+		candidates = candidates[:1]
+	}
+	if len(candidates) > maxFailoverAttempts {
+		candidates = candidates[:maxFailoverAttempts]
 	}
 	upstream, reasoning := current.upstream(req.Model)
 	payload, ok := toMistralChat(req.Payload, req.OriginalRequest, req.SourceFormat, upstream, stream)
@@ -266,62 +285,76 @@ func execute(request []byte, stream bool) []byte {
 		payload = forceEffort(payload, reasoning)
 	}
 	started := time.Now()
-	entry := requestLog{Model: req.Model, Upstream: upstream, Credential: cred.Label, Stream: stream}
-	upstreamURL := strings.TrimRight(current.BaseURL, "/") + "/chat/completions"
-	headers := map[string][]string{
-		"Authorization": {"Bearer " + cred.APIKey},
-		"Content-Type":  {"application/json"},
-		"Accept":        {"application/json"},
-	}
-	if stream {
-		headers["Accept"] = []string{"text/event-stream"}
-		if err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry); err != nil {
-			entry.Status = http.StatusBadGateway
-			entry.DurationMs = time.Since(started).Milliseconds()
-			entry.Error = err.Error()
-			appendRequestLog(entry)
-			return errorEnvelope("upstream_error", err.Error(), http.StatusBadGateway)
+	entry := requestLog{Model: req.Model, Upstream: upstream, Stream: stream}
+	upstreamURL := strings.TrimRight(current.BaseURL, "/") + chatPath
+	var lastStatus int
+	var lastErr string
+	for index, cred := range candidates {
+		entry.Credential = cred.Label
+		entry.Attempts = index + 1
+		headers := map[string][]string{
+			"Authorization": {"Bearer " + cred.APIKey},
+			"Content-Type":  {"application/json"},
+			"Accept":        {"application/json"},
 		}
-		return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
+		if stream {
+			headers["Accept"] = []string{"text/event-stream"}
+			status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID)
+			if err == nil {
+				recordCredentialSuccess(cred.ID)
+				return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
+			}
+			lastStatus, lastErr = status, err.Error()
+			if retryableStatus(status) {
+				recordCredentialFailure(cred.ID, status, lastErr)
+			}
+		} else {
+			status, body, err := upstreamRequest(req.HostCallbackID, http.MethodPost, upstreamURL, headers, payload)
+			if err == nil && upstreamStatusOK(status) {
+				recordCredentialSuccess(cred.ID)
+				rewritten := body
+				if value, ok := rewriteResponseBody(body); ok {
+					rewritten = value
+				}
+				entry.Status = status
+				entry.DurationMs = time.Since(started).Milliseconds()
+				entry.TTFBMs = entry.DurationMs
+				entry.applyUsage(usageFromJSON(body), entry.DurationMs)
+				appendRequestLog(entry)
+				return mustOK(map[string]any{
+					"Payload": rewritten,
+					"Headers": map[string][]string{"content-type": {"application/json"}},
+				})
+			}
+			if err != nil {
+				lastStatus, lastErr = 0, err.Error()
+			} else {
+				lastStatus = status
+				lastErr = truncateText(redactSecret(string(body), cred.APIKey), 800)
+				if lastErr == "" {
+					lastErr = fmt.Sprintf("upstream status %d", status)
+				}
+			}
+			if retryableStatus(lastStatus) {
+				recordCredentialFailure(cred.ID, lastStatus, lastErr)
+			}
+		}
+		if !retryableStatus(lastStatus) || index == len(candidates)-1 {
+			break
+		}
 	}
-	result, err := callHost("host.http.do", map[string]any{
-		"host_callback_id": req.HostCallbackID,
-		"method":           "POST",
-		"url":              upstreamURL,
-		"headers":          headers,
-		"body":             payload,
-	})
-	if err != nil {
-		return errorEnvelope("upstream_error", err.Error(), http.StatusBadGateway)
+	status := lastStatus
+	if status == 0 {
+		status = http.StatusBadGateway
 	}
-	var resp struct {
-		StatusCode int    `json:"StatusCode"`
-		Body       []byte `json:"body"`
-	}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return errorEnvelope("upstream_error", err.Error(), http.StatusBadGateway)
-	}
-	if resp.StatusCode >= 400 {
-		return errorEnvelope("upstream_error", string(resp.Body), resp.StatusCode)
-	}
-	body := resp.Body
-	if rewritten, ok := rewriteResponseBody(body); ok {
-		body = rewritten
-	}
-	entry.Status = resp.StatusCode
+	entry.Status = status
 	entry.DurationMs = time.Since(started).Milliseconds()
-	entry.TTFBMs = entry.DurationMs
-	if resp.StatusCode >= 400 {
-		entry.Error = string(body)
-	}
+	entry.Error = lastErr
 	appendRequestLog(entry)
-	return mustOK(map[string]any{
-		"Payload": body,
-		"Headers": map[string][]string{"content-type": {"application/json"}},
-	})
+	return errorEnvelope("upstream_error", lastErr, status)
 }
 
-func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog) error {
+func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, credentialID string) (int, error) {
 	idle := loadSettings().StreamIdleSeconds
 	operationID := ""
 	if idle > 0 {
@@ -347,31 +380,32 @@ func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string
 	}
 	opened, err := callHost("host.http.do_stream", request)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	var openedResp struct {
 		StatusCode int    `json:"StatusCode"`
 		StreamID   string `json:"stream_id"`
 	}
 	if err := json.Unmarshal(opened, &openedResp); err != nil {
-		return err
+		return 0, err
 	}
-	if openedResp.StatusCode >= 400 {
+	if !upstreamStatusOK(openedResp.StatusCode) {
 		message, _ := readHTTPStream(openedResp.StreamID)
 		_, _ = callHost("host.http.stream_close", map[string]any{"stream_id": openedResp.StreamID})
+		message = truncateText(message, 800)
 		if strings.TrimSpace(message) == "" {
 			message = fmt.Sprintf("upstream status %d", openedResp.StatusCode)
 		}
-		return fmt.Errorf("%s", message)
+		return openedResp.StatusCode, fmt.Errorf("%s", message)
 	}
 	// The host does not read emitted chunks until this RPC returns, and its
 	// buffer is only 16 chunks. Emitting the whole upstream body here deadlocks
 	// on any response longer than that.
-	go pumpUpstream(openedResp.StreamID, streamID, started, entry, callbackID, operationID, idle)
-	return nil
+	go pumpUpstream(openedResp.StreamID, streamID, started, entry, callbackID, operationID, idle, credentialID)
+	return openedResp.StatusCode, nil
 }
 
-func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestLog, callbackID, operationID string, idle int) {
+func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestLog, callbackID, operationID string, idle int, credentialID string) {
 	last := time.Now().UnixNano()
 	stopWatch := make(chan struct{})
 	defer close(stopWatch)
@@ -387,6 +421,11 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 	for {
 		chunk, done, err := readHTTPStreamChunk(upstreamID)
 		if err != nil {
+			entry.Status = http.StatusBadGateway
+			entry.Error = err.Error()
+			entry.DurationMs = time.Since(started).Milliseconds()
+			appendRequestLog(entry)
+			recordCredentialFailure(credentialID, 0, err.Error())
 			return
 		}
 		pending = append(pending, chunk...)
@@ -396,6 +435,7 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 			if entry.TTFBMs == 0 {
 				entry.TTFBMs = time.Since(started).Milliseconds()
 			}
+			captureFrameUsage(&entry, frame)
 			if err := emitFrame(streamID, frame); err != nil {
 				entry.Status = http.StatusBadGateway
 				entry.Error = err.Error()
@@ -409,6 +449,7 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 		}
 	}
 	if len(bytes.TrimSpace(pending)) > 0 {
+		captureFrameUsage(&entry, pending)
 		_ = emitFrame(streamID, pending)
 	}
 	entry.Status = http.StatusOK
@@ -416,7 +457,28 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 	if entry.TTFBMs == 0 {
 		entry.TTFBMs = entry.DurationMs
 	}
+	entry.applyUsage(usageInfo{Prompt: entry.PromptTokens, Completion: entry.CompletionTokens, Cached: entry.CachedTokens}, entry.DurationMs)
 	appendRequestLog(entry)
+}
+
+func captureFrameUsage(entry *requestLog, frame []byte) {
+	data := bytes.TrimSpace(frame)
+	if bytes.HasPrefix(data, []byte("data:")) {
+		data = bytes.TrimSpace(bytes.TrimPrefix(data, []byte("data:")))
+	}
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) || !bytes.Contains(data, []byte(`"usage"`)) {
+		return
+	}
+	usage := usageFromJSON(data)
+	if usage.Prompt > 0 {
+		entry.PromptTokens = usage.Prompt
+	}
+	if usage.Completion > 0 {
+		entry.CompletionTokens = usage.Completion
+	}
+	if usage.Cached > 0 {
+		entry.CachedTokens = usage.Cached
+	}
 }
 
 func readHTTPStream(streamID string) (string, error) {
@@ -509,16 +571,17 @@ func setModel(payload []byte, model string, stream bool) []byte {
 
 func handleManagement(request []byte) []byte {
 	var req struct {
-		Method string `json:"Method"`
-		Path   string `json:"Path"`
-		Body   []byte `json:"Body"`
+		Method         string `json:"Method"`
+		Path           string `json:"Path"`
+		Body           []byte `json:"Body"`
+		HostCallbackID string `json:"host_callback_id"`
 	}
 	if err := json.Unmarshal(request, &req); err != nil {
 		return errorEnvelope("bad_request", err.Error(), http.StatusBadRequest)
 	}
 	path := req.Path
 	if req.Method == http.MethodPost && strings.Contains(path, "/mistral/api") {
-		status, body := handleAdmin(req.Body)
+		status, body := handleAdmin(req.Body, req.HostCallbackID)
 		kind := "application/json"
 		return mustOK(map[string]any{
 			"StatusCode": status,

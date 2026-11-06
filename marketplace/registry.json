@@ -4,13 +4,13 @@
     {
       "id": "mistral",
       "name": "Mistral",
-      "description": "CPA 插件。把 Mistral API 接到 OpenAI、Claude、Responses 和 Gemini 客户端，管理多把凭据、模型映射、思考档位和请求日志。",
+      "description": "CPA 插件。把 Mistral API 接到 OpenAI、Claude、Responses 和 Gemini 客户端，支持多凭据失败切换、上游模型发现、模型测试、思考档位和请求统计。",
       "author": "kaecho",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "repository": "https://github.com/kaecho/mistral",
       "homepage": "https://github.com/kaecho/mistral",
       "license": "MIT",
-      "tags": ["mistral", "provider", "streaming"],
+      "tags": ["mistral", "provider", "streaming", "failover"],
       "install": {"type": "github-release"}
     }
   ]

@@ -15,6 +15,8 @@ type settings struct {
 	BaseURL           string
 	LogRetention      int
 	StreamIdleSeconds int
+	Failover          bool
+	CooldownSeconds   int
 	Credentials       []credential
 	Models            []modelAlias
 }
@@ -57,20 +59,11 @@ func (s settings) clientNames() []string {
 }
 
 func (s settings) pick() (credential, bool) {
-	var chosen *credential
-	for i := range s.Credentials {
-		item := &s.Credentials[i]
-		if item.Disabled || strings.TrimSpace(item.APIKey) == "" {
-			continue
-		}
-		if chosen == nil || item.Priority > chosen.Priority {
-			chosen = item
-		}
-	}
-	if chosen == nil {
+	items := s.candidates()
+	if len(items) == 0 {
 		return credential{}, false
 	}
-	return *chosen, true
+	return items[0], true
 }
 
 func (s settings) configured() bool {
@@ -80,8 +73,10 @@ func (s settings) configured() bool {
 
 func defaultSettings() settings {
 	return settings{
-		BaseURL:      defaultBaseURL,
-		LogRetention: 200,
+		BaseURL:         defaultBaseURL,
+		LogRetention:    200,
+		Failover:        true,
+		CooldownSeconds: 60,
 		Models: []modelAlias{
 			{Client: "deepseek-v4.1-flash", Upstream: "deepseek-v4-1-flash-1017"},
 			{Client: "glm-5.3", Upstream: "zai-glm-5-3"},
@@ -107,6 +102,12 @@ func parseSettings(configYAML []byte) settings {
 		current.LogRetention = parsed.LogRetention
 	}
 	current.StreamIdleSeconds = parsed.StreamIdleSeconds
+	if parsed.Failover != nil {
+		current.Failover = *parsed.Failover
+	}
+	if parsed.CooldownSeconds != nil {
+		current.CooldownSeconds = clampInt(*parsed.CooldownSeconds, 0, 3600)
+	}
 	if len(parsed.Models) > 0 {
 		current.Models = parsed.Models
 	}
@@ -123,6 +124,8 @@ type parsedSettings struct {
 	APIKey            string
 	LogRetention      int
 	StreamIdleSeconds int
+	Failover          *bool
+	CooldownSeconds   *int
 	Credentials       []credential
 	Models            []modelAlias
 }
@@ -239,6 +242,13 @@ func parseSettingsText(text string) parsedSettings {
 			fmt.Sscanf(value, "%d", &out.LogRetention)
 		case name == "stream-idle-seconds":
 			fmt.Sscanf(value, "%d", &out.StreamIdleSeconds)
+		case name == "failover":
+			enabled := value == "true" || value == "1" || value == "yes" || value == "on"
+			out.Failover = &enabled
+		case name == "cooldown-seconds":
+			var seconds int
+			fmt.Sscanf(value, "%d", &seconds)
+			out.CooldownSeconds = &seconds
 		}
 	}
 	if inCred {
@@ -299,6 +309,8 @@ func renderPluginBlock(s settings) string {
 	fmt.Fprintf(&buf, "      base-url: %s\n", quoteYAML(s.BaseURL))
 	fmt.Fprintf(&buf, "      log-retention: %d\n", s.LogRetention)
 	fmt.Fprintf(&buf, "      stream-idle-seconds: %d\n", s.StreamIdleSeconds)
+	fmt.Fprintf(&buf, "      failover: %t\n", s.Failover)
+	fmt.Fprintf(&buf, "      cooldown-seconds: %d\n", s.CooldownSeconds)
 	buf.WriteString("      credentials:\n")
 	for _, item := range s.Credentials {
 		fmt.Fprintf(&buf, "        - id: %s\n", quoteYAML(item.ID))
@@ -353,6 +365,16 @@ func replacePluginBlock(config, block string) (string, error) {
 		}
 	}
 	return buf.String(), nil
+}
+
+func clampInt(value, low, high int) int {
+	if value < low {
+		return low
+	}
+	if value > high {
+		return high
+	}
+	return value
 }
 
 func maskKey(key string) string {

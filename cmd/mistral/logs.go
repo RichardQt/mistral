@@ -11,15 +11,48 @@ import (
 const logPath = "/CLIProxyAPI/plugin-data/mistral/requests.jsonl"
 
 type requestLog struct {
-	Time       string `json:"time"`
-	Model      string `json:"model"`
-	Upstream   string `json:"upstream"`
-	Credential string `json:"credential"`
-	Status     int    `json:"status"`
-	TTFBMs     int64  `json:"ttfb_ms"`
-	DurationMs int64  `json:"duration_ms"`
-	Stream     bool   `json:"stream"`
-	Error      string `json:"error,omitempty"`
+	Time             string  `json:"time"`
+	Model            string  `json:"model"`
+	Upstream         string  `json:"upstream"`
+	Credential       string  `json:"credential"`
+	Status           int     `json:"status"`
+	TTFBMs           int64   `json:"ttfb_ms"`
+	DurationMs       int64   `json:"duration_ms"`
+	Stream           bool    `json:"stream"`
+	Attempts         int     `json:"attempts,omitempty"`
+	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64   `json:"completion_tokens,omitempty"`
+	CachedTokens     int64   `json:"cached_tokens,omitempty"`
+	TokensPerSecond  float64 `json:"tokens_per_second,omitempty"`
+	CacheHitRate     float64 `json:"cache_hit_rate,omitempty"`
+	Probe            bool    `json:"probe,omitempty"`
+	Error            string  `json:"error,omitempty"`
+}
+
+func (entry *requestLog) applyUsage(usage usageInfo, durationMs int64) {
+	if usage.Prompt > 0 {
+		entry.PromptTokens = usage.Prompt
+	}
+	if usage.Completion > 0 {
+		entry.CompletionTokens = usage.Completion
+	}
+	if usage.Cached > 0 {
+		entry.CachedTokens = usage.Cached
+	}
+	generation := durationMs - entry.TTFBMs
+	if generation <= 0 {
+		generation = durationMs
+	}
+	if entry.CompletionTokens > 0 && generation > 0 {
+		entry.TokensPerSecond = roundRate(float64(entry.CompletionTokens) * 1000 / float64(generation))
+	}
+	if entry.PromptTokens > 0 && entry.CachedTokens > 0 {
+		entry.CacheHitRate = roundRate(float64(entry.CachedTokens) / float64(entry.PromptTokens))
+	}
+}
+
+func roundRate(value float64) float64 {
+	return float64(int64(value*100+0.5)) / 100
 }
 
 var logMu sync.Mutex
@@ -63,7 +96,7 @@ func trimRequestLogs(keep int) {
 }
 
 func recentLogs(limit int) []requestLog {
-	if limit <= 0 || limit > 200 {
+	if limit <= 0 || limit > 5000 {
 		limit = 50
 	}
 	logMu.Lock()
@@ -84,6 +117,57 @@ func recentLogs(limit int) []requestLog {
 		}
 	}
 	return out
+}
+
+func summarizeLogs(logs []requestLog) map[string]any {
+	var requests, success, errors, streams int
+	var promptTokens, completionTokens, cachedTokens, ttfbTotal, durationTotal, generationMs int64
+	for _, entry := range logs {
+		if entry.Probe {
+			continue
+		}
+		requests++
+		if entry.Stream {
+			streams++
+		}
+		if entry.Status >= 200 && entry.Status < 400 {
+			success++
+		} else {
+			errors++
+		}
+		if entry.TTFBMs > 0 {
+			ttfbTotal += entry.TTFBMs
+		}
+		if entry.DurationMs > 0 {
+			durationTotal += entry.DurationMs
+		}
+		promptTokens += entry.PromptTokens
+		completionTokens += entry.CompletionTokens
+		cachedTokens += entry.CachedTokens
+		if entry.CompletionTokens > 0 && entry.DurationMs > 0 {
+			generation := entry.DurationMs - entry.TTFBMs
+			if generation <= 0 {
+				generation = entry.DurationMs
+			}
+			generationMs += generation
+		}
+	}
+	summary := map[string]any{
+		"requests": requests, "success": success, "errors": errors, "streams": streams,
+		"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "cached_tokens": cachedTokens,
+	}
+	if requests > 0 {
+		summary["success_rate"] = roundRate(float64(success) / float64(requests))
+		summary["avg_ttfb_ms"] = ttfbTotal / int64(requests)
+		summary["avg_duration_ms"] = durationTotal / int64(requests)
+	}
+	if generationMs > 0 {
+		summary["tokens_per_second"] = roundRate(float64(completionTokens) * 1000 / float64(generationMs))
+	}
+	if promptTokens > 0 {
+		summary["cache_hit_rate"] = roundRate(float64(cachedTokens) / float64(promptTokens))
+	}
+	return summary
 }
 
 func splitLines(text string) []string {
