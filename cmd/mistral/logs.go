@@ -52,7 +52,7 @@ func (entry *requestLog) applyUsage(usage usageInfo, durationMs int64) {
 }
 
 func roundRate(value float64) float64 {
-	return float64(int64(value*100+0.5)) / 100
+	return float64(int64(value*10000+0.5)) / 10000
 }
 
 var logMu sync.Mutex

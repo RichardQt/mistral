@@ -23,6 +23,7 @@ Connect Mistral to CLIProxyAPI (CPA). Clients keep using CPA's address and key.
 - Sends a small request for a single mapping to check the key, model ID, and reasoning setting together.
 - Records request logs and statistics: first-byte time, total time, output speed, cache hits, and failover attempts.
 - Cancels streaming requests that stop producing bytes for too long.
+- Runs the console in English or Chinese, follows the CPA language on first load, and keeps a manual language switch.
 
 ## Install
 
