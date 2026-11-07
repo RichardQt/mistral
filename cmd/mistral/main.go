@@ -242,7 +242,11 @@ func modelsJSON() []byte {
 				"Max":            128000,
 				"ZeroAllowed":    true,
 				"DynamicAllowed": true,
-				"Levels":         []string{"low", "medium", "high", "xhigh", "max"},
+				// The host validates reasoning_effort against this list before
+				// the plugin sees the request, so it has to cover every value
+				// clients send; normalizeEffort then maps each one onto what
+				// the target model actually accepts.
+				"Levels": []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"},
 			},
 		})
 	}
@@ -383,26 +387,31 @@ func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string
 		return 0, err
 	}
 	var openedResp struct {
-		StatusCode int    `json:"StatusCode"`
+		StatusCode int    `json:"status_code"`
+		LegacyCode int    `json:"StatusCode"`
 		StreamID   string `json:"stream_id"`
 	}
 	if err := json.Unmarshal(opened, &openedResp); err != nil {
 		return 0, err
 	}
-	if !upstreamStatusOK(openedResp.StatusCode) {
+	status := openedResp.StatusCode
+	if status == 0 {
+		status = openedResp.LegacyCode
+	}
+	if !upstreamStatusOK(status) {
 		message, _ := readHTTPStream(openedResp.StreamID)
 		_, _ = callHost("host.http.stream_close", map[string]any{"stream_id": openedResp.StreamID})
 		message = truncateText(message, 800)
 		if strings.TrimSpace(message) == "" {
-			message = fmt.Sprintf("upstream status %d", openedResp.StatusCode)
+			message = fmt.Sprintf("upstream status %d", status)
 		}
-		return openedResp.StatusCode, fmt.Errorf("%s", message)
+		return status, fmt.Errorf("%s", message)
 	}
 	// The host does not read emitted chunks until this RPC returns, and its
 	// buffer is only 16 chunks. Emitting the whole upstream body here deadlocks
 	// on any response longer than that.
 	go pumpUpstream(openedResp.StreamID, streamID, started, entry, callbackID, operationID, idle, credentialID)
-	return openedResp.StatusCode, nil
+	return status, nil
 }
 
 func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestLog, callbackID, operationID string, idle int, credentialID string) {

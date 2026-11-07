@@ -70,4 +70,17 @@ func TestProbeActionsAgainstUpstream(t *testing.T) {
 	if status != 200 || !strings.Contains(string(body), `"failover":true`) || !strings.Contains(string(body), `"mistral-large-latest"`) {
 		t.Fatalf("state status=%d body=%s", status, body)
 	}
+	var state map[string]any
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if state["active"] != "key" || state["active_label"] != "test" {
+		t.Fatalf("active credential = %#v / %#v", state["active"], state["active_label"])
+	}
+	if _, ok := state["recent"].([]any); !ok {
+		t.Fatalf("recent logs missing: %#v", state["recent"])
+	}
+	if strings.Contains(string(body), "test-key") {
+		t.Fatalf("state leaks the api key: %s", body)
+	}
 }

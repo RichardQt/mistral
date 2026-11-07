@@ -39,13 +39,18 @@ func httpDo(callbackID, method, url string, headers map[string][]string, body []
 			return 0, nil, err
 		}
 		var response struct {
-			StatusCode int    `json:"StatusCode"`
+			StatusCode int    `json:"status_code"`
+			LegacyCode int    `json:"StatusCode"`
 			Body       []byte `json:"body"`
 		}
 		if err := json.Unmarshal(raw, &response); err != nil {
 			return 0, nil, err
 		}
-		return response.StatusCode, response.Body, nil
+		status := response.StatusCode
+		if status == 0 {
+			status = response.LegacyCode
+		}
+		return status, response.Body, nil
 	}
 	request, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
@@ -332,7 +337,9 @@ func testModelAction(callbackID string, current settings, id, credentialID strin
 		"stream":     false,
 	}
 	if alias.Reasoning != "" {
-		payload["reasoning_effort"] = alias.Reasoning
+		if effort := normalizeEffort(alias.Upstream, alias.Reasoning); effort != "" {
+			payload["reasoning_effort"] = effort
+		}
 	}
 	raw, err := encodeJSON(payload)
 	if err != nil {

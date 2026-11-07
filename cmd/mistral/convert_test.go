@@ -42,7 +42,9 @@ func TestResponsesToMistralChat(t *testing.T) {
 	if err := json.Unmarshal(out, &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc["reasoning_effort"] != "low" || doc["max_tokens"] != float64(10) || doc["stream"] != true {
+	// The Vibe CLI models only accept none/high, so the Responses "low" effort
+	// has to be lifted to high instead of being forwarded verbatim.
+	if doc["reasoning_effort"] != "high" || doc["max_tokens"] != float64(10) || doc["stream"] != true {
 		t.Fatalf("doc = %#v", doc)
 	}
 	message := doc["messages"].([]any)[0].(map[string]any)

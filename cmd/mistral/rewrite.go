@@ -87,6 +87,24 @@ func parseModelPatterns(configYAML []byte) []string {
 	return patterns
 }
 
+// Mistral validates the chat body against a strict schema and answers 422 with
+// "Extra inputs are not permitted" for anything it does not know. OpenAI and
+// Responses clients send plenty of such fields, so drop them before forwarding.
+var unsupportedTopLevelFields = []string{
+	"store", "logit_bias", "web_search", "web_search_options",
+	"continue_final_message", "prefix", "verbosity", "reasoning",
+	"text", "instructions", "input", "top_k", "prompt_mode",
+}
+
+// Each Mistral message role accepts its own field set; a field that belongs to
+// another role is a 422 rather than being ignored.
+var allowedMessageFields = map[string]map[string]bool{
+	"system":    {"role": true, "content": true},
+	"user":      {"role": true, "content": true},
+	"assistant": {"role": true, "content": true, "tool_calls": true, "prefix": true},
+	"tool":      {"role": true, "content": true, "tool_call_id": true},
+}
+
 func rewriteRequestBody(body []byte, patterns []string, model, requested string) ([]byte, bool) {
 	if !modelMatches(patterns, model, requested) {
 		return nil, false
@@ -96,9 +114,29 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 		return nil, false
 	}
 	changed := false
-	if _, ok := doc["store"]; ok {
-		delete(doc, "store")
-		changed = true
+	if reasoning, ok := doc["reasoning"].(map[string]any); ok {
+		if effort, ok := reasoning["effort"].(string); ok && effort != "" {
+			if _, exists := doc["reasoning_effort"]; !exists {
+				doc["reasoning_effort"] = effort
+			}
+		}
+	}
+	for _, key := range unsupportedTopLevelFields {
+		if _, ok := doc[key]; ok {
+			delete(doc, key)
+			changed = true
+		}
+	}
+	if effort, ok := doc["reasoning_effort"].(string); ok {
+		normalized := normalizeEffort(model, effort)
+		if normalized != effort {
+			if normalized == "" {
+				delete(doc, "reasoning_effort")
+			} else {
+				doc["reasoning_effort"] = normalized
+			}
+			changed = true
+		}
 	}
 	messages, ok := doc["messages"].([]any)
 	if !ok {
@@ -128,18 +166,57 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 }
 
 func rewriteMessage(msg map[string]any) bool {
-	reasoning := firstString(msg["reasoning_content"], msg["reasoning"])
-	role, _ := msg["role"].(string)
 	changed := false
-	if reasoning != "" && role == "assistant" {
+	role, _ := msg["role"].(string)
+	// OpenAI replaced the system role with "developer"; Mistral only knows the
+	// original tag and rejects the alias outright.
+	if role == "developer" {
+		role = "system"
+		msg["role"] = role
+		changed = true
+	}
+	if reasoning := firstString(msg["reasoning_content"], msg["reasoning"]); reasoning != "" && role == "assistant" {
 		msg["content"] = appendThinking(msg["content"], reasoning)
 		changed = true
 	}
-	for _, key := range []string{"reasoning_content", "reasoning", "refusal"} {
-		if _, ok := msg[key]; ok {
+	if allowed, known := allowedMessageFields[role]; known {
+		for key := range msg {
+			if allowed[key] {
+				continue
+			}
 			delete(msg, key)
 			changed = true
 		}
+	} else {
+		for _, key := range []string{"reasoning_content", "reasoning", "refusal"} {
+			if _, ok := msg[key]; ok {
+				delete(msg, key)
+				changed = true
+			}
+		}
+	}
+	if parts, ok := msg["content"].([]any); ok {
+		if normalizeContentParts(parts) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// Responses-style text parts are not part of Mistral's content unions.
+func normalizeContentParts(parts []any) bool {
+	changed := false
+	for _, item := range parts {
+		part, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		kind, _ := part["type"].(string)
+		if kind != "input_text" && kind != "output_text" {
+			continue
+		}
+		part["type"] = "text"
+		changed = true
 	}
 	return changed
 }
@@ -323,4 +400,52 @@ func rewriteStreamPayload(payload []byte) ([]byte, bool) {
 		return append([]byte("data: "), rewritten...), true
 	}
 	return rewriteResponseBody(trimmed)
+}
+
+// Mistral rejects any effort value outside the per-model list, and the lists
+// differ: the Vibe CLI models only take high, the deepseek/GLM routes take a
+// wider set. Values outside the list are a 400 on every path forward.
+var effortByModel = map[string][]string{
+	"mistral-vibe-cli-latest":     {"none", "high"},
+	"mistral-vibe-cli-with-tools": {"none", "high"},
+	"mistral-vibe-cli-fast":       {"none", "high"},
+	"zai-glm-5-3":                 {"low", "high", "max"},
+	"zai-glm-5-3-flash":           {"low", "high", "max"},
+}
+
+var defaultEffortLadder = []string{"none", "low", "high", "xhigh", "max"}
+
+// unsupported client values are remapped onto the nearest upstream level, so
+// an effort the model cannot express never turns into a hard failure.
+var effortAliases = map[string]string{
+	"minimal": "low",
+	"medium":  "high",
+	"default": "high",
+	"auto":    "high",
+}
+
+func normalizeEffort(model, effort string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	if effort == "" {
+		return ""
+	}
+	levels := effortByModel[model]
+	if len(levels) == 0 {
+		levels = defaultEffortLadder
+	}
+	for _, level := range levels {
+		if level == effort {
+			return effort
+		}
+	}
+	if alias, ok := effortAliases[effort]; ok {
+		for _, level := range levels {
+			if level == alias {
+				return alias
+			}
+		}
+	}
+	// Unknown or out-of-range: fall back to the strongest level the model
+	// advertises, which keeps thinking on instead of failing the request.
+	return levels[len(levels)-1]
 }

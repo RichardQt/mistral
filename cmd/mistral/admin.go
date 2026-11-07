@@ -31,13 +31,20 @@ func publicState() map[string]any {
 			"id": item.Client, "upstream_id": item.Upstream, "reasoning": item.Reasoning,
 		})
 	}
-	_, active := current.pick()
+	activeCredential, _ := current.pick()
+	logs := recentLogs(200)
+	recent := make([]requestLog, 0, 30)
+	recent = append(recent, logs...)
+	if len(recent) > 30 {
+		recent = recent[:30]
+	}
 	return map[string]any{
 		"base_url": current.BaseURL, "log_retention": current.LogRetention,
 		"stream_idle_seconds": current.StreamIdleSeconds,
 		"failover":            current.Failover, "cooldown_seconds": current.CooldownSeconds,
-		"credentials": creds, "models": models, "active": active, "configured": current.configured(),
-		"stats": summarizeLogs(recentLogs(200)), "version": pluginVersion,
+		"credentials": creds, "models": models, "active": activeCredential.ID, "active_label": activeCredential.Label,
+		"configured": current.configured(),
+		"stats":      summarizeLogs(logs), "recent": recent, "version": pluginVersion,
 	}
 }
 

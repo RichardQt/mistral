@@ -2,65 +2,65 @@
 
 # Mistral
 
-把 Mistral API 接到 CLIProxyAPI（CPA），客户端继续用 CPA 的地址和 key。
+Connect Mistral to CLIProxyAPI (CPA). Clients keep using CPA's address and key.
 
 [![Release](https://img.shields.io/github/v/release/kaecho/mistral?style=flat&color=2563eb)](https://github.com/kaecho/mistral/releases/latest)
 [![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-64748b)](https://github.com/kaecho/mistral/releases)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/github/license/kaecho/mistral?color=16a34a)](LICENSE)
 
-[English](README.en.md) · [下载安装](https://github.com/kaecho/mistral/releases) · [反馈问题](https://github.com/kaecho/mistral/issues)
+[中文](README.zh.md) · [Releases](https://github.com/kaecho/mistral/releases) · [Issues](https://github.com/kaecho/mistral/issues)
 
 </div>
 
-## 这个插件做什么
+## What it does
 
-- 接收 OpenAI Chat Completions、Responses、Claude、Gemini 四种请求，统一转成 Mistral 的 chat completions。
-- 把 Mistral 返回的思考块改写成各协议自己的字段，客户端不用猜 `delta.content` 里的数组结构。
-- 管理多把 Mistral API key。每把可以设优先级、停用、单独检测。
-- 上游失败时自动换下一把凭据，并按冷却时间避开刚失败的 key。
-- 从上游拉取模型列表，勾选后直接生成模型映射，不用手抄模型 ID。
-- 对单条模型映射发一个小请求，验证 key、模型 ID、思考档位能不能一起工作。
-- 记录请求日志和统计，包括首字耗时、总耗时、输出速度、缓存命中、失败切换次数。
-- 流式请求长时间没有新字节时自动截断，避免客户端一直挂着。
+- Accepts OpenAI Chat Completions, Responses, Claude, and Gemini requests and converts them to Mistral chat completions.
+- Rewrites Mistral thinking blocks into the field each protocol expects, so clients do not have to parse arrays inside `delta.content`.
+- Manages multiple Mistral API keys. Each key can have a priority, be disabled, or be tested on its own.
+- Fails over to the next credential when the upstream rejects the current one, and keeps recently failed keys out of the first attempt.
+- Fetches the upstream model list and creates mappings from selected models, so model IDs do not have to be typed by hand.
+- Sends a small request for a single mapping to check the key, model ID, and reasoning setting together.
+- Records request logs and statistics: first-byte time, total time, output speed, cache hits, and failover attempts.
+- Cancels streaming requests that stop producing bytes for too long.
 
-## 安装
+## Install
 
-插件 id 是 `mistral`。需要支持动态库插件和 JSON ABI v1 的 CPA。
+The plugin id is `mistral`. It needs a CPA build with dynamic library plugins and JSON ABI v1.
 
-1. 在 CPA 插件市场安装 **Mistral**，或者从 [Releases](https://github.com/kaecho/mistral/releases) 下载对应平台的压缩包。
-2. 把库文件放到 CPA 的 `plugins/<os>/<arch>/`，文件名保持压缩包里的名字：
-   - Linux amd64 / arm64：`mistral.so`
-   - macOS arm64：`mistral.dylib`
-   - Windows amd64：`mistral.dll`
-3. 重启 CPA。同名文件替换后不重启，进程会继续用旧库。
-4. 在 `auths/` 下放一个 `mistral.json`：
+1. Install **Mistral** from the CPA plugin marketplace, or download the archive for your platform from [Releases](https://github.com/kaecho/mistral/releases).
+2. Put the library in CPA's `plugins/<os>/<arch>/` directory and keep the archive's filename:
+   - Linux amd64 / arm64: `mistral.so`
+   - macOS arm64: `mistral.dylib`
+   - Windows amd64: `mistral.dll`
+3. Restart CPA. Replacing the file without a restart leaves the old library loaded.
+4. Add `auths/mistral.json`:
 
 ```json
 {"type":"mistral"}
 ```
 
-没有这个 auth 文件，路由会返回 `auth_not_found`。文件里不需要写 key，key 由插件自己管理。
+Without this auth file, routing returns `auth_not_found`. The file does not need an API key. The plugin manages keys itself.
 
-## 快速开始
+## Getting started
 
-打开 CPA 管理页的 **Mistral** 菜单，或者直接访问：
+Open the **Mistral** menu in the CPA management page, or go to:
 
 ```text
 http://<cpa>/v0/resource/plugins/mistral/console
 ```
 
-控制台会尝试复用 CPA 管理页的登录状态。直连 CPA 时读浏览器里的 `cli-proxy-auth`；从 CPA 管理页的插件菜单进入时，也会从同源父页面读取。两处都读不到时，页面会提示从管理页的 Mistral 菜单打开，不会弹窗问密钥。
+The console tries to reuse the CPA management session. It reads `cli-proxy-auth` from the browser when CPA is opened directly, and also reads the same-origin parent page when opened from the plugin menu. If neither source is available, the page asks you to open it from the Mistral menu. It does not prompt for a key.
 
-第一次使用按这个顺序：
+First-run order:
 
-1. 在「凭据」里添加 Mistral API key，点「检测」确认 `GET /models` 能通过。没有 key 时点「创建 Vibe API key」，会打开 `https://chat.mistral.ai/code/extensions`。
-2. 在「模型」里选择凭据，点「拉取上游模型」，勾选要用的模型后添加。
-3. 在客户端填 CPA 的地址和 CPA 的客户端 key，模型名用映射表左边的客户端名称。
+1. Add a Mistral API key under Credentials, then click Check to confirm `GET /models` succeeds. If you do not have a key, click Create Vibe API key to open `https://chat.mistral.ai/code/extensions`.
+2. Under Models, choose a credential, click Fetch upstream models, select what you need, and add them.
+3. Point your client at CPA's address and CPA client key. Use the client-side model name from the mapping table.
 
-## 配置
+## Configuration
 
-保存控制台设置时，插件会把整个 `plugins.configs.mistral` 块写回 CPA 配置文件。旧版只有一把 `api-key` 加 `models` 列表的写法仍然能读，第一次在控制台保存后会变成下面的结构。
+Saving in the console writes the whole `plugins.configs.mistral` block back to CPA's config file. The old format with one `api-key` and a `models` list still loads. The first console save rewrites it into the structure below.
 
 ```yaml
 plugins:
@@ -75,12 +75,12 @@ plugins:
       cooldown-seconds: 60
       credentials:
         - id: "primary"
-          label: "主凭据"
+          label: "Primary"
           api-key: "mstrl_..."
           disabled: false
           priority: 10
         - id: "backup"
-          label: "备用凭据"
+          label: "Backup"
           api-key: "mstrl_..."
           disabled: false
           priority: 5
@@ -93,111 +93,111 @@ plugins:
           reasoning: "max"
 ```
 
-| 字段 | 说明 |
+| Field | Meaning |
 | --- | --- |
-| `base-url` | Mistral API 地址，带 `/v1`。默认 `https://api.mistral.ai/v1`。 |
-| `log-retention` | 保留多少条请求日志，范围 10 到 5000。 |
-| `stream-idle-seconds` | 流式空闲截断。0 关闭，大于 0 时上游超过这个秒数没有新字节就取消本次请求。 |
-| `failover` | 打开后，上游失败会按优先级尝试下一把凭据。关闭时只用当前排在最前的一把。 |
-| `cooldown-seconds` | 失败后的基础冷却秒数，范围 0 到 3600。0 表示不冷却，但仍然会按顺序切换。 |
-| `credentials[].priority` | 数字越大越先用。 |
-| `credentials[].disabled` | 为 true 时不参与调度。 |
-| `models[].id` | 客户端看到的模型名。 |
-| `models[].upstream-id` | 实际发给 Mistral 的模型 ID。 |
-| `models[].reasoning` | 留空则沿用客户端的 `reasoning_effort`。填 `low`、`medium`、`high`、`xhigh`、`max` 等值时强制覆盖。 |
+| `base-url` | Mistral API base URL, including `/v1`. Defaults to `https://api.mistral.ai/v1`. |
+| `log-retention` | Number of request log entries to keep, from 10 to 5000. |
+| `stream-idle-seconds` | Stream idle cutoff. 0 disables it. Above 0, an upstream request is cancelled after this many seconds without new bytes. |
+| `failover` | When enabled, a failed upstream attempt moves to the next credential by priority. When disabled, only the first credential in the current order is used. |
+| `cooldown-seconds` | Base cooldown after a failure, from 0 to 3600. 0 disables cooldown, but failover still moves through the list. |
+| `credentials[].priority` | Higher numbers are tried first. |
+| `credentials[].disabled` | When true, the credential is not scheduled. |
+| `models[].id` | Model name exposed to clients. |
+| `models[].upstream-id` | Model ID sent to Mistral. |
+| `models[].reasoning` | Empty passes through the client's `reasoning_effort`. A value such as `low`, `medium`, `high`, `xhigh`, or `max` forces an override. |
 
-## 调用模型
+## Calling a model
 
-假设映射是 `deepseek-v4.1-flash` → `deepseek-v4-1-flash-1017`，向 CPA 发请求时 `model` 填客户端名称：
+With the mapping `deepseek-v4.1-flash` → `deepseek-v4-1-flash-1017`, send the client-side name as `model`:
 
 ```json
 {
   "model": "deepseek-v4.1-flash",
-  "messages": [{"role": "user", "content": "你好"}],
+  "messages": [{"role": "user", "content": "Hello"}],
   "stream": true
 }
 ```
 
-插件会把请求体里的 `model` 换成上游 ID，保留 `reasoning_effort`，去掉 Mistral 不接受的字段（比如 `store`，以及 assistant 消息上的 `reasoning_content`、`reasoning`、`refusal`），再把历史里的思考内容折回 Mistral 认识的 content 数组。
+The plugin replaces `model` with the upstream ID, keeps `reasoning_effort`, removes fields Mistral rejects (`store`, plus `reasoning_content`, `reasoning`, and `refusal` on assistant messages), and folds old thinking content back into the content array Mistral understands.
 
-## 思考块
+## Thinking blocks
 
-Mistral 把思考内容放在 `delta.content` 数组里，元素形如 `{"type":"thinking", ...}`。插件的出口只声明 `chat-completions`，所以会先把思考块拆成 OpenAI 的 `reasoning_content`，再由 CPA 转成其他协议：
+Mistral returns thinking content as elements in a `delta.content` array, such as `{"type":"thinking", ...}`. The plugin only declares `chat-completions` as its output format, so it first splits thinking into OpenAI's `reasoning_content`. CPA then converts that into the field the client protocol uses:
 
-| 客户端协议 | 思考字段 |
+| Client protocol | Thinking field |
 | --- | --- |
 | OpenAI Chat Completions | `reasoning_content` |
 | Claude | `thinking` |
 | Responses | `reasoning` |
 | Gemini | `thought: true` |
 
-触发思考靠保留 `reasoning_effort`。OpenAI Chat 请求优先用 `OriginalRequest`，因为 CPA 的 `Payload` 可能在预处理时丢掉这个字段。模型映射里的 `reasoning` 非空时，插件会覆盖客户端传来的档位。
+Thinking is triggered by preserving `reasoning_effort`. OpenAI Chat requests prefer `OriginalRequest` because CPA's `Payload` can drop the field during preprocessing. When a mapping has a non-empty `reasoning`, the plugin overrides the client's setting.
 
-## 凭据调度与冷却
+## Credential scheduling and cooldown
 
-按 `priority` 从高到低排。正常凭据排在前面，冷却中的凭据排在后面，停用或没有 key 的凭据直接跳过。所以某把 key 刚失败时，请求会先走其他 key；所有 key 都在冷却时，仍然会尝试优先级最高的那把，避免短暂故障把整条链路堵死。
+Credentials are ordered by `priority` from high to low. Healthy credentials come first, cooling credentials come after them, and disabled or keyless credentials are skipped. A request that follows a failure therefore tries the other keys first. If every key is cooling, the highest-priority one is still attempted, so a short outage does not block all traffic.
 
-这些情况会切到下一把：
+These responses move to the next credential:
 
-- `401`、`403`：key 无效或没有权限
-- `408`、`425`、`429`：超时、过早请求、限流
-- `5xx`：上游错误
-- 传输错误，包括连不上、连接中断
+- `401`, `403`: invalid key or missing permission
+- `408`, `425`, `429`: timeout, too early, rate limit
+- `5xx`: upstream error
+- Transport errors, including connection failures and interrupted connections
 
-`400`、`404`、`422` 不重试，这类错误换 key 也一样。一次请求最多尝试 3 把凭据。
+`400`, `404`, and `422` are not retried because another key would receive the same error. A request tries at most three credentials.
 
-失败后冷却时间按 `cooldown-seconds × 2^(连续失败次数-1)` 增长，最长 15 分钟。任意一次成功会清掉这把 key 的失败计数和冷却。控制台可以手动「解除冷却」。
+After a failure the cooldown is `cooldown-seconds × 2^(consecutive failures - 1)`, capped at 15 minutes. Any success clears that key's failure count and cooldown. The console also has a Reset cooldown action.
 
-流式请求只有在打开上游连接时才能切换。上游已经返回 `200` 并开始推流后，如果中途断开，插件会记录错误并结束这次流，不会把半截内容重放一遍。
+Failover for streaming requests happens while opening the upstream connection. Once the upstream returns `200` and starts streaming, a later disconnect is logged and the stream ends. The plugin does not replay a partial response.
 
-## 上游模型发现与测试
+## Model discovery and tests
 
-「凭据」里的「检测」会调用 `GET /models`，确认 key 能用，并显示模型数量和延迟。
+Check under Credentials calls `GET /models`, confirms the key works, and reports the model count and latency.
 
-「模型」里的「拉取上游模型」也用同一接口，把上游模型列出来。勾选后批量写入映射，已经存在的上游 ID 会标成「已添加」。客户端名称默认等于上游 ID，可以在表格里再改。
+Fetch upstream models under Models uses the same endpoint and lists the upstream catalog. Select models and add them in one batch. Upstream IDs that already have a mapping are marked as added. The client name defaults to the upstream ID and can be changed later.
 
-「测试」会对单条映射发一个非流式请求，`max_tokens` 是 64，并带上这条映射的思考档位。测试结果只用于确认 key、模型 ID 和参数能通过，会计入 Mistral 账单。测试请求写进日志时带 `probe` 标记，不计入统计。
+Test sends a non-streaming request for one mapping with `max_tokens: 64` and the mapping's reasoning setting. It checks the key, model ID, and parameters together and counts toward your Mistral bill. Test requests are logged with a `probe` flag and excluded from statistics.
 
-## 请求日志与统计
+## Request logs and statistics
 
-日志在容器里的：
+Logs are written inside the container to:
 
 ```text
 /CLIProxyAPI/plugin-data/mistral/requests.jsonl
 ```
 
-每条记录包含时间、客户端模型、上游模型、实际使用的凭据、状态码、尝试次数、首字耗时、总耗时、输出 token、缓存 token、输出速度和错误。旧日志没有新字段时按零处理。
+Each entry contains time, client model, upstream model, credential actually used, status, attempt count, first-byte time, total time, input tokens, output tokens, cached tokens, output speed, and error. Older entries without the newer fields read as zero.
 
-控制台「日志」页显示最近 50、100 或 200 条，并按状态过滤。统计只算真实客户端请求，排除管理页的测试请求。输出速度是 completion token 除以生成时间；缓存命中率是缓存 token 除以 prompt token。Mistral 不在流式响应里返回 usage 时，这两个值会留空。
+The Logs tab shows the latest 50, 100, or 200 entries, filters by status, and lists input, output, and cached tokens for each request. Times are shown in seconds with one decimal. Statistics cover real client traffic only and exclude management tests. Output speed is completion tokens divided by generation time. Cache hit rate is cached tokens divided by input tokens. Both are left empty when Mistral does not return usage on a stream.
 
-## 流式截断
+## Stream cutoff
 
-`stream-idle-seconds` 大于 0 时，插件会打开一个可取消的上游操作，并每秒检查最近一次收到字节的时间。超过阈值没有新字节就取消上游请求，同时关闭下游流。
+When `stream-idle-seconds` is above 0, the plugin opens a cancellable upstream operation and checks the time of the last received byte every second. If the threshold passes with no new bytes, it cancels the upstream request and closes the downstream stream.
 
-`max` 档位的第一包经常超过 20 秒，这个值不要设得太小。0 表示关闭，默认就是关闭。
+The first packet for the `max` setting often takes more than 20 seconds. Do not set this value too low. 0 disables the cutoff, which is the default.
 
-## 从源码构建
+## Build from source
 
-需要 Go 1.26 和 C 编译器。Linux amd64 可以用仓库里的 Dockerfile：
+You need Go 1.26 and a C compiler. Linux amd64 can use the repository's Dockerfile:
 
 ```bash
 docker build --platform linux/amd64 -f Dockerfile.build --output type=local,dest=dist .
 ```
 
-产物是 `dist/mistral.so`。其他平台的构建方式见 [发布工作流](.github/workflows/release.yml)。
+The result is `dist/mistral.so`. Other platforms are built by the [release workflow](.github/workflows/release.yml).
 
-## 发布
+## Release
 
-版本以 `marketplace/registry.json` 的 `plugins[0].version` 为准，必须等于 `cmd/mistral/version.go` 里的 `pluginVersion`。
+The version in `marketplace/registry.json` under `plugins[0].version` is authoritative, and it must equal `pluginVersion` in `cmd/mistral/version.go`.
 
-推送 `v` 加这个版本的 tag，例如 `v0.3.0`，Actions 会：
+Push a tag named `v` plus that version, for example `v0.3.0`. Actions will:
 
-1. 在各平台跑测试并编译动态库。
-2. 打包 linux amd64、linux arm64、darwin arm64、windows amd64 四个压缩包。
-3. 生成 `checksums.txt`，创建或更新 GitHub Release，并标成 latest。
+1. Run tests and build the shared library on each platform.
+2. Package linux amd64, linux arm64, darwin arm64, and windows amd64.
+3. Write `checksums.txt`, create or update the GitHub release, and mark it latest.
 
-tag 和版本不一致时，工作流直接失败，不会发版。
+A tag that does not match the version fails the workflow before anything is published.
 
-## 许可
+## License
 
-[MIT License](LICENSE)。
+[MIT License](LICENSE).

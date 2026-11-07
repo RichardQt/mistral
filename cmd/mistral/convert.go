@@ -470,7 +470,10 @@ func forceEffort(payload []byte, effort string) []byte {
 	if err := decodeJSON(payload, &doc); err != nil {
 		return payload
 	}
-	doc["reasoning_effort"] = effort
+	model, _ := doc["model"].(string)
+	if normalized := normalizeEffort(model, effort); normalized != "" {
+		doc["reasoning_effort"] = normalized
+	}
 	out, err := encodeJSON(doc)
 	if err != nil {
 		return payload
