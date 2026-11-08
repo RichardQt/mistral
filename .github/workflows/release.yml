@@ -98,30 +98,45 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
-      - name: Test and build native macOS library
+      - name: Test on macOS
+        shell: bash
+        env:
+          CGO_ENABLED: '1'
+        run: go test ./cmd/mistral
+      - name: Build macOS libraries
         shell: bash
         env:
           CGO_ENABLED: '1'
           GOOS: darwin
-          GOARCH: arm64
         run: |
           set -euo pipefail
-          go test ./cmd/mistral
-          mkdir -p dist
-          go build -trimpath -buildvcs=false -buildmode=c-shared -ldflags='-s -w' \
-            -o dist/mistral.dylib ./cmd/mistral
-      - name: Package macOS library
+          mkdir -p dist/darwin-arm64 dist/darwin-amd64
+          GOARCH=arm64 go build -trimpath -buildvcs=false -buildmode=c-shared -ldflags='-s -w' \
+            -o dist/darwin-arm64/mistral.dylib ./cmd/mistral
+          GOARCH=amd64 go build -trimpath -buildvcs=false -buildmode=c-shared -ldflags='-s -w' \
+            -o dist/darwin-amd64/mistral.dylib ./cmd/mistral
+          test "$(lipo -archs dist/darwin-arm64/mistral.dylib)" = arm64
+          test "$(lipo -archs dist/darwin-amd64/mistral.dylib)" = x86_64
+      - name: Package macOS libraries
         shell: bash
         run: |
           set -euo pipefail
-          test "$(lipo -archs dist/mistral.dylib)" = arm64
-          archive="dist/mistral_${{ needs.metadata.outputs.version }}_darwin_arm64.zip"
-          zip -j "$archive" dist/mistral.dylib
-          test "$(unzip -Z1 "$archive")" = mistral.dylib
+          version='${{ needs.metadata.outputs.version }}'
+          arm="dist/mistral_${version}_darwin_arm64.zip"
+          intel="dist/mistral_${version}_darwin_amd64.zip"
+          (cd dist/darwin-arm64 && zip -j "../mistral_${version}_darwin_arm64.zip" mistral.dylib)
+          (cd dist/darwin-amd64 && zip -j "../mistral_${version}_darwin_amd64.zip" mistral.dylib)
+          test "$(unzip -Z1 "$arm")" = mistral.dylib
+          test "$(unzip -Z1 "$intel")" = mistral.dylib
       - uses: actions/upload-artifact@v4
         with:
           name: package-darwin-arm64
-          path: dist/mistral_*.zip
+          path: dist/mistral_*_darwin_arm64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-darwin-amd64
+          path: dist/mistral_*_darwin_amd64.zip
           if-no-files-found: error
 
   windows-amd64:
@@ -205,7 +220,7 @@ jobs:
           set -euo pipefail
           cd dist
           version='${{ needs.metadata.outputs.version }}'
-          for spec in linux_amd64:so linux_arm64:so darwin_arm64:dylib windows_amd64:dll; do
+          for spec in linux_amd64:so linux_arm64:so darwin_amd64:dylib darwin_arm64:dylib windows_amd64:dll; do
             platform="${spec%%:*}"
             extension="${spec#*:}"
             archive="mistral_${version}_${platform}.zip"

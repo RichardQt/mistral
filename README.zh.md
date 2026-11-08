@@ -32,7 +32,7 @@
 1. 在 CPA 插件市场安装 **Mistral**，或者从 [Releases](https://github.com/kaecho/mistral/releases) 下载对应平台的压缩包。
 2. 把库文件放到 CPA 的 `plugins/<os>/<arch>/`，文件名保持压缩包里的名字：
    - Linux amd64 / arm64：`mistral.so`
-   - macOS arm64：`mistral.dylib`
+   - macOS arm64 / amd64：`mistral.dylib`
    - Windows amd64：`mistral.dll`
 3. 重启 CPA。同名文件替换后不重启，进程会继续用旧库。
 4. 在 `auths/` 下放一个 `mistral.json`：
@@ -194,7 +194,7 @@ docker build --platform linux/amd64 -f Dockerfile.build --output type=local,dest
 推送 `v` 加这个版本的 tag，例如 `v0.3.0`，Actions 会：
 
 1. 在各平台跑测试并编译动态库。
-2. 打包 linux amd64、linux arm64、darwin arm64、windows amd64 四个压缩包。
+2. 打包 linux amd64、linux arm64、darwin arm64、darwin amd64、windows amd64 五个压缩包。
 3. 生成 `checksums.txt`，创建或更新 GitHub Release，并标成 latest。
 
 tag 和版本不一致时，工作流直接失败，不会发版。

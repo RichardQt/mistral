@@ -32,7 +32,7 @@ The plugin id is `mistral`. It needs a CPA build with dynamic library plugins an
 1. Install **Mistral** from the CPA plugin marketplace, or download the archive for your platform from [Releases](https://github.com/kaecho/mistral/releases).
 2. Put the library in CPA's `plugins/<os>/<arch>/` directory and keep the archive's filename:
    - Linux amd64 / arm64: `mistral.so`
-   - macOS arm64: `mistral.dylib`
+   - macOS arm64 / amd64: `mistral.dylib`
    - Windows amd64: `mistral.dll`
 3. Restart CPA. Replacing the file without a restart leaves the old library loaded.
 4. Add `auths/mistral.json`:
@@ -194,7 +194,7 @@ The version in `marketplace/registry.json` under `plugins[0].version` is authori
 Push a tag named `v` plus that version, for example `v0.3.0`. Actions will:
 
 1. Run tests and build the shared library on each platform.
-2. Package linux amd64, linux arm64, darwin arm64, and windows amd64.
+2. Package linux amd64, linux arm64, darwin arm64, darwin amd64, and windows amd64.
 3. Write `checksums.txt`, create or update the GitHub release, and mark it latest.
 
 A tag that does not match the version fails the workflow before anything is published.
