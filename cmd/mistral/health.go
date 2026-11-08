@@ -1,13 +1,27 @@
 package main
 
 import (
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
-const maxFailoverAttempts = 3
+const (
+	maxFailoverAttempts = 3
+	// maxUpstreamAttempts bounds the calls made for one credential. A
+	// transport error or a 5xx is retried once before the request is failed,
+	// so a single stuck upstream response does not cool the whole auth down.
+	maxUpstreamAttempts = 2
+	// upstreamRetryBackoff is the pause before the retry.
+	upstreamRetryBackoff = 500 * time.Millisecond
+	// upstreamRetryAfterSecs is the cooldown hint sent to CPA when the plugin
+	// finally gives up. CPA keeps it only when it is positive; a value at or
+	// below max-retry-interval lets CPA retry the request automatically
+	// instead of blackholing the model for its 60s default.
+	upstreamRetryAfterSecs = 20
+)
 
 type credentialHealth struct {
 	Failures      int
@@ -170,6 +184,18 @@ func credentialFaultStatus(status int) bool {
 
 func retryableStatus(status int) bool {
 	return credentialFaultStatus(status)
+}
+
+// transientUpstreamStatus reports failures worth retrying on the same
+// credential. Auth and rate-limit statuses are excluded: an immediate retry
+// cannot help them, and the failover loop handles them by switching
+// credentials instead.
+func transientUpstreamStatus(status int) bool {
+	switch status {
+	case 0, http.StatusRequestTimeout:
+		return true
+	}
+	return status >= 500
 }
 
 func truncateText(text string, limit int) string {

@@ -295,9 +295,9 @@ func execute(request []byte, stream bool) []byte {
 	upstreamURL := strings.TrimRight(current.BaseURL, "/") + chatPath
 	var lastStatus int
 	var lastErr string
+	attempts := 0
 	for index, cred := range candidates {
 		entry.Credential = cred.Label
-		entry.Attempts = index + 1
 		headers := map[string][]string{
 			"Authorization": {"Bearer " + cred.APIKey},
 			"Content-Type":  {"application/json"},
@@ -305,45 +305,57 @@ func execute(request []byte, stream bool) []byte {
 		}
 		if stream {
 			headers["Accept"] = []string{"text/event-stream"}
-			status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID, current.IgnoreProxy)
-			if err == nil {
-				recordCredentialSuccess(cred.ID)
-				return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
+		}
+		for attempt := 0; attempt < maxUpstreamAttempts; attempt++ {
+			if attempt > 0 {
+				time.Sleep(upstreamRetryBackoff)
 			}
-			lastStatus, lastErr = status, err.Error()
-			if retryableStatus(status) {
-				recordCredentialFailure(cred.ID, status, lastErr)
-			}
-		} else {
-			status, body, err := upstreamRequest(req.HostCallbackID, current.IgnoreProxy, http.MethodPost, upstreamURL, headers, payload)
-			if err == nil && upstreamStatusOK(status) {
-				recordCredentialSuccess(cred.ID)
-				rewritten := body
-				if value, ok := rewriteResponseBody(body); ok {
-					rewritten = value
+			attempts++
+			entry.Attempts = attempts
+			if stream {
+				status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID, current.IgnoreProxy)
+				if err == nil {
+					recordCredentialSuccess(cred.ID)
+					return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
 				}
-				entry.Status = status
-				entry.DurationMs = time.Since(started).Milliseconds()
-				entry.TTFBMs = entry.DurationMs
-				entry.applyUsage(usageFromJSON(body), entry.DurationMs)
-				appendRequestLog(entry)
-				return mustOK(map[string]any{
-					"Payload": rewritten,
-					"Headers": map[string][]string{"content-type": {"application/json"}},
-				})
-			}
-			if err != nil {
-				lastStatus, lastErr = 0, err.Error()
+				lastStatus, lastErr = status, err.Error()
 			} else {
-				lastStatus = status
-				lastErr = truncateText(redactSecret(string(body), cred.APIKey), 800)
-				if lastErr == "" {
-					lastErr = fmt.Sprintf("upstream status %d", status)
+				status, body, err := upstreamRequest(req.HostCallbackID, current.IgnoreProxy, http.MethodPost, upstreamURL, headers, payload)
+				if err == nil && upstreamStatusOK(status) {
+					recordCredentialSuccess(cred.ID)
+					rewritten := body
+					if value, ok := rewriteResponseBody(body); ok {
+						rewritten = value
+					}
+					entry.Status = status
+					entry.DurationMs = time.Since(started).Milliseconds()
+					entry.TTFBMs = entry.DurationMs
+					entry.applyUsage(usageFromJSON(body), entry.DurationMs)
+					appendRequestLog(entry)
+					return mustOK(map[string]any{
+						"Payload": rewritten,
+						"Headers": map[string][]string{"content-type": {"application/json"}},
+					})
+				}
+				if err != nil {
+					lastStatus, lastErr = 0, err.Error()
+				} else {
+					lastStatus = status
+					lastErr = truncateText(redactSecret(string(body), cred.APIKey), 800)
+					if lastErr == "" {
+						lastErr = fmt.Sprintf("upstream status %d", status)
+					}
 				}
 			}
-			if retryableStatus(lastStatus) {
-				recordCredentialFailure(cred.ID, lastStatus, lastErr)
+			// A transient failure is worth one immediate retry on the same
+			// credential: the upstream usually recovers (or the prompt is now
+			// cached), and returning the error would cool the whole auth down.
+			if !transientUpstreamStatus(lastStatus) {
+				break
 			}
+		}
+		if retryableStatus(lastStatus) {
+			recordCredentialFailure(cred.ID, lastStatus, lastErr)
 		}
 		if !retryableStatus(lastStatus) || index == len(candidates)-1 {
 			break
@@ -357,7 +369,7 @@ func execute(request []byte, stream bool) []byte {
 	entry.DurationMs = time.Since(started).Milliseconds()
 	entry.Error = lastErr
 	appendRequestLog(entry)
-	return errorEnvelope("upstream_error", lastErr, status)
+	return upstreamErrorEnvelope(lastErr, status)
 }
 
 func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, credentialID string, direct bool) (int, error) {
@@ -644,6 +656,10 @@ type envelopeError struct {
 	Code       string `json:"code"`
 	Message    string `json:"message"`
 	HTTPStatus int    `json:"http_status,omitempty"`
+	// RetryAfterSeconds is an optional cooldown hint for CPA. It shortens the
+	// auth cooldown for transient upstream failures so the host can retry the
+	// request instead of returning 503 until the default cooldown expires.
+	RetryAfterSeconds int `json:"retry_after_seconds,omitempty"`
 }
 
 func mustOK(value any) []byte {
@@ -664,6 +680,23 @@ func okEnvelope(value any) ([]byte, error) {
 
 func errorEnvelope(code, message string, httpStatus int) []byte {
 	raw, _ := encodeJSON(envelope{OK: false, Error: &envelopeError{Code: code, Message: message, HTTPStatus: httpStatus}})
+	return raw
+}
+
+// upstreamErrorEnvelope reports a failed upstream call. Transient failures
+// carry a short Retry-After hint so CPA cools the auth for seconds instead of
+// its default minute and retries the request itself.
+func upstreamErrorEnvelope(message string, status int) []byte {
+	retryAfter := 0
+	if transientUpstreamStatus(status) || status == http.StatusTooManyRequests {
+		retryAfter = upstreamRetryAfterSecs
+	}
+	raw, _ := encodeJSON(envelope{OK: false, Error: &envelopeError{
+		Code:              "upstream_error",
+		Message:           message,
+		HTTPStatus:        status,
+		RetryAfterSeconds: retryAfter,
+	}})
 	return raw
 }
 

@@ -10,9 +10,18 @@ import (
 	"time"
 )
 
+// directHeaderTimeout bounds how long a direct request may wait for response
+// headers. Mistral's gateway only gives up on a stuck backend after 15 minutes
+// and answers 504, which is far longer than any client waits, so the plugin
+// fails fast and retries instead.
+const directHeaderTimeout = 120 * time.Second
+
 var (
 	directTransportOnce sync.Once
 	directTransportPool *http.Transport
+
+	directStreamTransportOnce sync.Once
+	directStreamTransportPool *http.Transport
 )
 
 // directTransport bypasses every proxy, including the process environment.
@@ -32,6 +41,18 @@ func directTransport() *http.Transport {
 	return directTransportPool
 }
 
+// directStreamTransport is the streaming variant: it keeps the direct dialing
+// but bounds the wait for response headers. The body itself is never subject to
+// this timeout, so long generations still stream to completion.
+func directStreamTransport() *http.Transport {
+	directStreamTransportOnce.Do(func() {
+		clone := directTransport().Clone()
+		clone.ResponseHeaderTimeout = directHeaderTimeout
+		directStreamTransportPool = clone
+	})
+	return directStreamTransportPool
+}
+
 // directStreamOpen dials Mistral directly and returns once response headers
 // arrive; the caller reads the body.
 func directStreamOpen(url string, headers map[string][]string, body []byte) (*http.Response, error) {
@@ -47,12 +68,12 @@ func directStreamOpen(url string, headers map[string][]string, body []byte) (*ht
 	if request.Header.Get("User-Agent") == "" {
 		request.Header.Set("User-Agent", "kaecho-mistral/"+pluginVersion)
 	}
-	// Keep the connection open for streaming; the idle cutoff is enforced by
-	// pumpDirectStream, so no client-level timeout is set here.
-	client := &http.Client{Transport: directTransport()}
+	// Keep the connection open for streaming; only the wait for response
+	// headers is bounded, the idle cutoff is enforced by pumpDirectStream.
+	client := &http.Client{Transport: directStreamTransport()}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("direct upstream request: %w", err)
 	}
 	return response, nil
 }
