@@ -16,6 +16,7 @@ type settings struct {
 	LogRetention      int
 	StreamIdleSeconds int
 	Failover          bool
+	IgnoreProxy       bool
 	CooldownSeconds   int
 	Credentials       []credential
 	Models            []modelAlias
@@ -105,6 +106,9 @@ func parseSettings(configYAML []byte) settings {
 	if parsed.Failover != nil {
 		current.Failover = *parsed.Failover
 	}
+	if parsed.IgnoreProxy != nil {
+		current.IgnoreProxy = *parsed.IgnoreProxy
+	}
 	if parsed.CooldownSeconds != nil {
 		current.CooldownSeconds = clampInt(*parsed.CooldownSeconds, 0, 3600)
 	}
@@ -125,6 +129,7 @@ type parsedSettings struct {
 	LogRetention      int
 	StreamIdleSeconds int
 	Failover          *bool
+	IgnoreProxy       *bool
 	CooldownSeconds   *int
 	Credentials       []credential
 	Models            []modelAlias
@@ -245,6 +250,9 @@ func parseSettingsText(text string) parsedSettings {
 		case name == "failover":
 			enabled := value == "true" || value == "1" || value == "yes" || value == "on"
 			out.Failover = &enabled
+		case name == "ignore-proxy" || name == "ignore_proxy":
+			enabled := value == "true" || value == "1" || value == "yes" || value == "on"
+			out.IgnoreProxy = &enabled
 		case name == "cooldown-seconds":
 			var seconds int
 			fmt.Sscanf(value, "%d", &seconds)
@@ -310,6 +318,7 @@ func renderPluginBlock(s settings) string {
 	fmt.Fprintf(&buf, "      log-retention: %d\n", s.LogRetention)
 	fmt.Fprintf(&buf, "      stream-idle-seconds: %d\n", s.StreamIdleSeconds)
 	fmt.Fprintf(&buf, "      failover: %t\n", s.Failover)
+	fmt.Fprintf(&buf, "      ignore-proxy: %t\n", s.IgnoreProxy)
 	fmt.Fprintf(&buf, "      cooldown-seconds: %d\n", s.CooldownSeconds)
 	buf.WriteString("      credentials:\n")
 	for _, item := range s.Credentials {

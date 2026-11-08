@@ -41,8 +41,9 @@ func publicState() map[string]any {
 	return map[string]any{
 		"base_url": current.BaseURL, "log_retention": current.LogRetention,
 		"stream_idle_seconds": current.StreamIdleSeconds,
-		"failover":            current.Failover, "cooldown_seconds": current.CooldownSeconds,
-		"credentials": creds, "models": models, "active": activeCredential.ID, "active_label": activeCredential.Label,
+		"failover":            current.Failover, "ignore_proxy": current.IgnoreProxy,
+		"cooldown_seconds": current.CooldownSeconds,
+		"credentials":      creds, "models": models, "active": activeCredential.ID, "active_label": activeCredential.Label,
 		"configured": current.configured(),
 		"stats":      summarizeLogs(logs), "recent": recent, "version": pluginVersion,
 	}
@@ -68,6 +69,7 @@ type adminRequest struct {
 	LogRetention      int          `json:"log_retention"`
 	StreamIdleSeconds *int         `json:"stream_idle_seconds"`
 	Failover          *bool        `json:"failover"`
+	IgnoreProxy       *bool        `json:"ignore_proxy"`
 	CooldownSeconds   *int         `json:"cooldown_seconds"`
 	Limit             int          `json:"limit"`
 	CredentialID      string       `json:"credential_id"`
@@ -159,6 +161,9 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 		}
 		if req.Failover != nil {
 			next.Failover = *req.Failover
+		}
+		if req.IgnoreProxy != nil {
+			next.IgnoreProxy = *req.IgnoreProxy
 		}
 		if req.CooldownSeconds != nil {
 			next.CooldownSeconds = *req.CooldownSeconds

@@ -23,8 +23,13 @@ type upstreamModel struct {
 	Capabilities map[string]any `json:"capabilities,omitempty"`
 }
 
-func httpDo(callbackID, method, url string, headers map[string][]string, body []byte) (int, []byte, error) {
-	if callbackID != "" {
+// httpDo performs one upstream request. With ignoreProxy off the request goes
+// through the CPA host bridge so the host keeps its transport policy, proxy,
+// and request logging. With it on the plugin dials Mistral itself and bypasses
+// the host, which is the only way to ignore CPA's global proxy for this
+// provider.
+func httpDo(callbackID string, ignoreProxy bool, method, url string, headers map[string][]string, body []byte) (int, []byte, error) {
+	if callbackID != "" && !ignoreProxy {
 		request := map[string]any{
 			"host_callback_id": callbackID,
 			"method":           method,
@@ -65,6 +70,9 @@ func httpDo(callbackID, method, url string, headers map[string][]string, body []
 		request.Header.Set("User-Agent", "kaecho-mistral/"+pluginVersion)
 	}
 	client := &http.Client{Timeout: 30 * time.Second}
+	if ignoreProxy {
+		client = &http.Client{Timeout: 600 * time.Second, Transport: directTransport()}
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return 0, nil, err
@@ -158,7 +166,7 @@ func testCredentialAction(callbackID string, current settings, id string) map[st
 		return map[string]any{"ok": false, "error": "select a credential that has an API key"}
 	}
 	started := time.Now()
-	status, body, err := httpDo(callbackID, http.MethodGet, strings.TrimRight(current.BaseURL, "/")+modelsPath, modelHeaders(cred), nil)
+	status, body, err := httpDo(callbackID, current.IgnoreProxy, http.MethodGet, strings.TrimRight(current.BaseURL, "/")+modelsPath, modelHeaders(cred), nil)
 	elapsed := time.Since(started)
 	if err != nil {
 		recordCredentialProbe(cred.ID, 0, elapsed, err.Error())
@@ -191,7 +199,7 @@ func fetchModelsAction(callbackID string, current settings, credentialID string)
 		return map[string]any{"ok": false, "error": "select a credential that has an API key"}
 	}
 	started := time.Now()
-	status, body, err := httpDo(callbackID, http.MethodGet, strings.TrimRight(current.BaseURL, "/")+modelsPath, modelHeaders(cred), nil)
+	status, body, err := httpDo(callbackID, current.IgnoreProxy, http.MethodGet, strings.TrimRight(current.BaseURL, "/")+modelsPath, modelHeaders(cred), nil)
 	elapsed := time.Since(started)
 	if err != nil {
 		recordCredentialProbe(cred.ID, 0, elapsed, err.Error())
@@ -346,7 +354,7 @@ func testModelAction(callbackID string, current settings, id, credentialID strin
 		return map[string]any{"ok": false, "error": err.Error()}
 	}
 	started := time.Now()
-	status, body, err := httpDo(callbackID, http.MethodPost, strings.TrimRight(current.BaseURL, "/")+chatPath, map[string][]string{
+	status, body, err := httpDo(callbackID, current.IgnoreProxy, http.MethodPost, strings.TrimRight(current.BaseURL, "/")+chatPath, map[string][]string{
 		"Authorization": {"Bearer " + cred.APIKey},
 		"Content-Type":  {"application/json"},
 		"Accept":        {"application/json"},

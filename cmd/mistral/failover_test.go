@@ -102,7 +102,7 @@ func TestExecuteFailsOverToNextCredential(t *testing.T) {
 	original := upstreamRequest
 	t.Cleanup(func() { upstreamRequest = original })
 	calls := 0
-	upstreamRequest = func(callbackID, method, url string, headers map[string][]string, body []byte) (int, []byte, error) {
+	upstreamRequest = func(callbackID string, ignoreProxy bool, method, url string, headers map[string][]string, body []byte) (int, []byte, error) {
 		calls++
 		if headers["Authorization"][0] == "Bearer ka" {
 			return 429, []byte(`{"error":"rate limited"}`), nil

@@ -255,13 +255,14 @@ func modelsJSON() []byte {
 
 func execute(request []byte, stream bool) []byte {
 	var req struct {
-		Model           string `json:"Model"`
-		Format          string `json:"Format"`
-		SourceFormat    string `json:"SourceFormat"`
-		Payload         []byte `json:"Payload"`
-		OriginalRequest []byte `json:"OriginalRequest"`
-		StreamID        string `json:"stream_id"`
-		HostCallbackID  string `json:"host_callback_id"`
+		Model           string         `json:"Model"`
+		Format          string         `json:"Format"`
+		SourceFormat    string         `json:"SourceFormat"`
+		Payload         []byte         `json:"Payload"`
+		OriginalRequest []byte         `json:"OriginalRequest"`
+		Metadata        map[string]any `json:"Metadata"`
+		StreamID        string         `json:"stream_id"`
+		HostCallbackID  string         `json:"host_callback_id"`
 	}
 	if err := json.Unmarshal(request, &req); err != nil {
 		return errorEnvelope("bad_request", err.Error(), http.StatusBadRequest)
@@ -288,8 +289,9 @@ func execute(request []byte, stream bool) []byte {
 	if reasoning != "" {
 		payload = forceEffort(payload, reasoning)
 	}
+	payload, cacheKeySource := applyPromptCacheKey(payload, req.OriginalRequest, req.Metadata, upstream)
 	started := time.Now()
-	entry := requestLog{Model: req.Model, Upstream: upstream, Stream: stream}
+	entry := requestLog{Model: req.Model, Upstream: upstream, Stream: stream, CacheKeySource: cacheKeySource}
 	upstreamURL := strings.TrimRight(current.BaseURL, "/") + chatPath
 	var lastStatus int
 	var lastErr string
@@ -303,7 +305,7 @@ func execute(request []byte, stream bool) []byte {
 		}
 		if stream {
 			headers["Accept"] = []string{"text/event-stream"}
-			status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID)
+			status, err := streamUpstream(req.HostCallbackID, req.StreamID, upstreamURL, headers, payload, started, entry, cred.ID, current.IgnoreProxy)
 			if err == nil {
 				recordCredentialSuccess(cred.ID)
 				return mustOK(map[string]any{"headers": map[string][]string{"content-type": {"text/event-stream"}}})
@@ -313,7 +315,7 @@ func execute(request []byte, stream bool) []byte {
 				recordCredentialFailure(cred.ID, status, lastErr)
 			}
 		} else {
-			status, body, err := upstreamRequest(req.HostCallbackID, http.MethodPost, upstreamURL, headers, payload)
+			status, body, err := upstreamRequest(req.HostCallbackID, current.IgnoreProxy, http.MethodPost, upstreamURL, headers, payload)
 			if err == nil && upstreamStatusOK(status) {
 				recordCredentialSuccess(cred.ID)
 				rewritten := body
@@ -358,8 +360,19 @@ func execute(request []byte, stream bool) []byte {
 	return errorEnvelope("upstream_error", lastErr, status)
 }
 
-func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, credentialID string) (int, error) {
+func streamUpstream(callbackID, streamID, upstreamURL string, headers map[string][]string, payload []byte, started time.Time, entry requestLog, credentialID string, direct bool) (int, error) {
 	idle := loadSettings().StreamIdleSeconds
+	if direct {
+		resp, errOpen := directStreamOpen(upstreamURL, headers, payload)
+		if errOpen != nil {
+			return 0, errOpen
+		}
+		if !upstreamStatusOK(resp.StatusCode) {
+			return resp.StatusCode, directStreamError(resp)
+		}
+		go pumpDirectStream(streamID, resp, started, entry, idle)
+		return resp.StatusCode, nil
+	}
 	operationID := ""
 	if idle > 0 {
 		if raw, err := callHost("host.http.operation_open", map[string]any{"host_callback_id": callbackID}); err == nil {

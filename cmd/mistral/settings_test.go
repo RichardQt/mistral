@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseModelAlias(t *testing.T) {
 	alias, ok := parseModelAlias("glm-5.3=zai-glm-5-3")
@@ -47,5 +50,30 @@ func TestOldAPIKeyMigrates(t *testing.T) {
 	upstream, _ := got.upstream("deepseek-v4.1-flash")
 	if upstream != "deepseek-v4-1-flash-1017" {
 		t.Fatalf("upstream %s", upstream)
+	}
+}
+
+func TestParseIgnoreProxySetting(t *testing.T) {
+	defaults := parseSettings(nil)
+	if defaults.IgnoreProxy {
+		t.Fatal("ignore-proxy must default off")
+	}
+	got := parseSettings([]byte("ignore-proxy: true\n"))
+	if !got.IgnoreProxy {
+		t.Fatal("ignore-proxy should parse as on")
+	}
+	off := parseSettings([]byte("ignore-proxy: false\n"))
+	if off.IgnoreProxy {
+		t.Fatal("ignore-proxy should parse as off")
+	}
+}
+
+func TestRenderPluginBlockIncludesIgnoreProxy(t *testing.T) {
+	block := renderPluginBlock(settings{
+		BaseURL: "https://api.mistral.ai/v1", LogRetention: 200, IgnoreProxy: true,
+		Failover: true, CooldownSeconds: 60,
+	})
+	if !strings.Contains(block, "ignore-proxy: true") {
+		t.Fatalf("block missing ignore-proxy:\n%s", block)
 	}
 }

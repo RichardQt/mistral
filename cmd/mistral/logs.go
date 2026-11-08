@@ -25,6 +25,7 @@ type requestLog struct {
 	CachedTokens     int64   `json:"cached_tokens,omitempty"`
 	TokensPerSecond  float64 `json:"tokens_per_second,omitempty"`
 	CacheHitRate     float64 `json:"cache_hit_rate,omitempty"`
+	CacheKeySource   string  `json:"cache_key_source,omitempty"`
 	Probe            bool    `json:"probe,omitempty"`
 	Error            string  `json:"error,omitempty"`
 }

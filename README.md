@@ -22,7 +22,9 @@ Connect Mistral to CLIProxyAPI (CPA). Clients keep using CPA's address and key.
 - Fetches the upstream model list and creates mappings from selected models, so model IDs do not have to be typed by hand.
 - Sends a small request for a single mapping to check the key, model ID, and reasoning setting together.
 - Records request logs and statistics: first-byte time, total time, output speed, cache hits, and failover attempts.
+- Maintains a stable `prompt_cache_key` so Mistral can reuse prompt prefixes; long agent conversations and batch jobs sharing a system prompt get cache hits instead of scattering across upstream nodes.
 - Cancels streaming requests that stop producing bytes for too long.
+- Optionally ignores CPA's global proxy when the host transport cannot reach the upstream directly.
 - Runs the console in English or Chinese, follows the CPA language on first load, and keeps a manual language switch.
 
 ## Install
@@ -73,6 +75,7 @@ plugins:
       log-retention: 200
       stream-idle-seconds: 0
       failover: true
+      ignore-proxy: false
       cooldown-seconds: 60
       credentials:
         - id: "primary"
@@ -100,6 +103,7 @@ plugins:
 | `log-retention` | Number of request log entries to keep, from 10 to 5000. |
 | `stream-idle-seconds` | Stream idle cutoff. 0 disables it. Above 0, an upstream request is cancelled after this many seconds without new bytes. |
 | `failover` | When enabled, a failed upstream attempt moves to the next credential by priority. When disabled, only the first credential in the current order is used. |
+| `ignore-proxy` | When enabled, the plugin connects to Mistral directly and bypasses CPA's global proxy. Off by default. |
 | `cooldown-seconds` | Base cooldown after a failure, from 0 to 3600. 0 disables cooldown, but failover still moves through the list. |
 | `credentials[].priority` | Higher numbers are tried first. |
 | `credentials[].disabled` | When true, the credential is not scheduled. |

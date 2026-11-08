@@ -22,7 +22,9 @@
 - 从上游拉取模型列表，勾选后直接生成模型映射，不用手抄模型 ID。
 - 对单条模型映射发一个小请求，验证 key、模型 ID、思考档位能不能一起工作。
 - 记录请求日志和统计，包括首字耗时、总耗时、输出速度、缓存命中、失败切换次数。
+- 稳定下发 `prompt_cache_key`，让 Mistral 复用提示词前缀；长上下文会话和共用 system 提示词的任务能命中缓存，而不是被打散到不同上游节点。
 - 流式请求长时间没有新字节时自动截断，避免客户端一直挂着。
+- 可选忽略 CPA 的全局代理；宿主 HTTP 桥没有直连开关时，插件可以自己直连上游。
 - 控制台支持中文和英文，首次加载跟随 CPA 的语言，也可以手动切换。
 
 ## 安装
@@ -73,6 +75,7 @@ plugins:
       log-retention: 200
       stream-idle-seconds: 0
       failover: true
+      ignore-proxy: false
       cooldown-seconds: 60
       credentials:
         - id: "primary"
@@ -100,6 +103,7 @@ plugins:
 | `log-retention` | 保留多少条请求日志，范围 10 到 5000。 |
 | `stream-idle-seconds` | 流式空闲截断。0 关闭，大于 0 时上游超过这个秒数没有新字节就取消本次请求。 |
 | `failover` | 打开后，上游失败会按优先级尝试下一把凭据。关闭时只用当前排在最前的一把。 |
+| `ignore-proxy` | 打开后插件直连 Mistral，不走 CPA 的全局代理。默认关闭。 |
 | `cooldown-seconds` | 失败后的基础冷却秒数，范围 0 到 3600。0 表示不冷却，但仍然会按顺序切换。 |
 | `credentials[].priority` | 数字越大越先用。 |
 | `credentials[].disabled` | 为 true 时不参与调度。 |

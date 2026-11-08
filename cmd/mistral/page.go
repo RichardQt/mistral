@@ -350,6 +350,10 @@ const STRINGS = {
     cooldown: '冷却基数',
     cooldownHint: '0 表示不冷却，单位秒。',
     failoverHint: '401、403、429、5xx、传输错误时换下一把。',
+    ignoreProxy: '忽略全局代理',
+    ignoreProxyHint: '勾选后本插件直接连接 Mistral，不走 CPA 的全局代理。默认关闭。',
+    ignoreProxyOn: '直连 · 绕过全局代理',
+    ignoreProxyOff: '跟随 CPA 全局代理',
     on: '开启',
     saveSettings: '保存配置',
     failoverOffHint: 'failover 关闭时只使用当前排在最前的一把凭据。',
@@ -382,6 +386,11 @@ const STRINGS = {
     colError: '错误',
     noLogs: '还没有请求记录。',
     probeTag: '测试',
+    cacheKeyClient: '缓存键来自客户端 prompt_cache_key',
+    cacheKeyInstructions: '缓存键按 system 指令生成',
+    cacheKeySession: '缓存键来自 CPA 会话身份',
+    cacheKeyUser: '缓存键按首条用户消息生成',
+    cacheKeyNone: '没有缓存键',
     missingSession: '没有读到管理页的登录状态。请从 CPA 管理页的 Mistral 菜单打开。'
   },
   en: {
@@ -524,6 +533,10 @@ const STRINGS = {
     cooldown: 'Cooldown base',
     cooldownHint: 'Seconds. 0 disables cooldown.',
     failoverHint: 'Move to the next credential on 401, 403, 429, 5xx, or transport errors.',
+    ignoreProxy: 'Ignore global proxy',
+    ignoreProxyHint: 'Connect to Mistral directly instead of through the CPA global proxy. Off by default.',
+    ignoreProxyOn: 'Direct · bypasses the global proxy',
+    ignoreProxyOff: 'Follows the CPA global proxy',
     on: 'On',
     saveSettings: 'Save settings',
     failoverOffHint: 'When failover is off, only the first credential in the current order is used.',
@@ -556,6 +569,11 @@ const STRINGS = {
     colError: 'Error',
     noLogs: 'No requests logged yet.',
     probeTag: 'Test',
+    cacheKeyClient: 'Cache key from client prompt_cache_key',
+    cacheKeyInstructions: 'Cache key derived from system instructions',
+    cacheKeySession: 'Cache key from CPA session identity',
+    cacheKeyUser: 'Cache key derived from first user message',
+    cacheKeyNone: 'No cache key',
     missingSession: 'Could not read the management session. Open this page from the Mistral menu in CPA.'
   }
 };
@@ -851,6 +869,7 @@ function renderOverview() {
   const policyCard = '<div class="card"><div class="rail-head"><div><div class="eyebrow">' + t('runtime') + '</div></div><button class="linklike" id="ov-config">' + t('settings') + '</button></div><div class="facts">'
     + fact(t('modelMappings'), t('modelCount', {n:models.length}))
     + fact(t('failover'), data.failover ? t('failoverOn', {n:data.cooldown_seconds}) : t('off'))
+    + fact(t('ignoreProxy'), data.ignore_proxy ? t('ignoreProxyOn') : t('ignoreProxyOff'))
     + fact(t('idleCutoff'), (data.stream_idle_seconds || 0) > 0 ? data.stream_idle_seconds + 's' : t('off'))
     + fact(t('logRetention'), t('entriesCount', {n:data.log_retention}))
     + '</div></div>';
@@ -1068,10 +1087,12 @@ function renderConfig() {
     + '<div class="field"><label for="idle">' + t('idleCutoff') + '<span class="hint">' + t('idleHint') + '</span></label><input id="idle" type="number" min="0" max="3600" value="' + (data.stream_idle_seconds || 0) + '"></div>'
     + '<div class="field"><label for="cooldown">' + t('cooldown') + '<span class="hint">' + t('cooldownHint') + '</span></label><input id="cooldown" type="number" min="0" max="3600" value="' + data.cooldown_seconds + '"></div>'
     + '<div class="field"><label>' + t('failover') + '<span class="hint">' + t('failoverHint') + '</span></label><span class="switch"><input id="failover" type="checkbox"' + (data.failover ? ' checked' : '') + '> ' + t('on') + '</span></div>'
+    + '<div class="field"><label>' + t('ignoreProxy') + '<span class="hint">' + t('ignoreProxyHint') + '</span></label><span class="switch"><input id="ignore-proxy" type="checkbox"' + (data.ignore_proxy ? ' checked' : '') + '> ' + t('on') + '</span></div>'
     + '</div><div class="form"><button class="primary" id="save-settings">' + t('saveSettings') + '</button><span class="muted">' + t('failoverOffHint') + '</span></div></div>';
   document.querySelector('#save-settings').onclick = () => applyAction({
     action:'put-settings', base_url:val('#base'), log_retention:Number(val('#keep')),
     stream_idle_seconds:Number(val('#idle')), failover:document.querySelector('#failover').checked,
+    ignore_proxy:document.querySelector('#ignore-proxy').checked,
     cooldown_seconds:Number(val('#cooldown'))
   }, t('settingsSaved'));
 }
@@ -1122,7 +1143,7 @@ function renderLogs() {
       + '<td class="num">' + sec(item.duration_ms) + '</td>'
       + '<td class="num">' + tokens(item.prompt_tokens) + '</td>'
       + '<td class="num">' + tokens(item.completion_tokens) + '</td>'
-      + '<td class="num">' + tokens(item.cached_tokens) + '</td>'
+      + '<td class="num" title="' + esc(cacheKeyHint(item)) + '">' + tokens(item.cached_tokens) + '</td>'
       + '<td class="num">' + (rate === null ? '—' : pct1(rate)) + '</td>'
       + '<td class="num">' + (Number(item.tokens_per_second || 0) > 0 ? Number(item.tokens_per_second).toFixed(1) : '—') + '</td>'
       + '<td class="error-cell err" title="' + esc(item.error || '') + '">' + esc(clip(item.error || '', 80)) + '</td></tr>';
@@ -1134,6 +1155,14 @@ function renderLogs() {
 document.querySelector('#log-refresh').onclick = loadLogs;
 document.querySelector('#log-filter').onchange = event => { logFilter = event.target.value; renderLogs(); };
 document.querySelector('#log-limit').onchange = loadLogs;
+function cacheKeyHint(item) {
+  const source = item.cache_key_source || '';
+  if (source === 'client') return t('cacheKeyClient');
+  if (source === 'instructions') return t('cacheKeyInstructions');
+  if (source === 'session') return t('cacheKeySession');
+  if (source === 'user') return t('cacheKeyUser');
+  return t('cacheKeyNone');
+}
 function val(sel) { const node = document.querySelector(sel); return node ? node.value.trim() : ''; }
 async function refresh() {
   data = await api({action:'state'});
