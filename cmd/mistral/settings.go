@@ -168,8 +168,13 @@ func parseSettingsText(text string) parsedSettings {
 		if trim == "" || strings.HasPrefix(trim, "#") {
 			continue
 		}
+		// Only column-zero lines are top-level keys. CPA re-serializes the
+		// plugin block with yaml.v3 before handing it to plugin.register, so a
+		// nested "api-key" under a credential arrives indented; treating it as
+		// the legacy top-level api-key would flush the credential before its
+		// key is read and silently drop the key.
 		indent := len(line) - len(strings.TrimLeft(line, " \t"))
-		if indent == 0 || strings.HasPrefix(trim, "base-url") || strings.HasPrefix(trim, "api-key") || strings.HasPrefix(trim, "log-retention") || strings.HasPrefix(trim, "stream-idle") || trim == "credentials:" || trim == "models:" {
+		if indent == 0 {
 			if inCred {
 				flushCred()
 				inCred = false

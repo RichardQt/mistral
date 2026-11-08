@@ -77,3 +77,54 @@ func TestRenderPluginBlockIncludesIgnoreProxy(t *testing.T) {
 		t.Fatalf("block missing ignore-proxy:\n%s", block)
 	}
 }
+
+func TestParseNormalizedYAMLKeepsCredentialKey(t *testing.T) {
+	// CPA re-serializes the plugin block with yaml.v3 (4-space indent) before
+	// calling plugin.register, so the nested api-key arrives indented. The
+	// parser must not mistake it for the legacy top-level api-key.
+	raw := `enabled: true
+priority: 100
+base-url: "https://x.example/v1"
+log-retention: 200
+stream-idle-seconds: 0
+failover: true
+ignore-proxy: true
+cooldown-seconds: 60
+credentials:
+    - id: "key-1"
+      label: "primary"
+      api-key: "mstrl_abc"
+      disabled: false
+      priority: 10
+    - id: "key-2"
+      label: "backup"
+      api-key: "mstrl_def"
+      disabled: true
+      priority: 5
+models:
+    - id: "m"
+      upstream-id: "upstream-m"
+      reasoning: ""
+`
+	got := parseSettings([]byte(raw))
+	if len(got.Credentials) != 2 {
+		t.Fatalf("credentials = %#v", got.Credentials)
+	}
+	if got.Credentials[0].APIKey != "mstrl_abc" || got.Credentials[1].APIKey != "mstrl_def" {
+		t.Fatalf("keys were not parsed: %#v", got.Credentials)
+	}
+	if !got.Credentials[1].Disabled || got.Credentials[1].Priority != 5 {
+		t.Fatalf("second credential = %#v", got.Credentials[1])
+	}
+	if !got.IgnoreProxy || !got.Failover {
+		t.Fatalf("settings = %#v", got)
+	}
+}
+
+func TestParseOldTopLevelAPIKeyStillWorks(t *testing.T) {
+	raw := "enabled: true\nbase-url: \"https://x.example/v1\"\napi-key: \"mstrl_legacy\"\nmodels:\n  - \"client=upstream\"\n"
+	got := parseSettings([]byte(raw))
+	if len(got.Credentials) != 1 || got.Credentials[0].APIKey != "mstrl_legacy" {
+		t.Fatalf("credentials = %#v", got.Credentials)
+	}
+}
