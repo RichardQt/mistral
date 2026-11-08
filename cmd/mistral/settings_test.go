@@ -128,3 +128,28 @@ func TestParseOldTopLevelAPIKeyStillWorks(t *testing.T) {
 		t.Fatalf("credentials = %#v", got.Credentials)
 	}
 }
+
+func TestParseRenderedPluginBlockRoundTripsKeys(t *testing.T) {
+	// The console writes the block with its own indentation; reading it back
+	// must return the same credentials.
+	original := settings{
+		BaseURL: "https://api.mistral.ai/v1", LogRetention: 200, Failover: true,
+		IgnoreProxy: true, CooldownSeconds: 60,
+		Credentials: []credential{
+			{ID: "a", Label: "A", APIKey: "mstrl_aaa", Priority: 10},
+			{ID: "b", Label: "B", APIKey: "mstrl_bbb", Priority: 5},
+		},
+		Models: []modelAlias{{Client: "m", Upstream: "upstream-m"}},
+	}
+	block := renderPluginBlock(original)
+	got := parseSettings([]byte(block))
+	if len(got.Credentials) != 2 {
+		t.Fatalf("credentials = %#v\nblock:\n%s", got.Credentials, block)
+	}
+	if got.Credentials[0].APIKey != "mstrl_aaa" || got.Credentials[1].APIKey != "mstrl_bbb" {
+		t.Fatalf("keys = %#v", got.Credentials)
+	}
+	if !got.IgnoreProxy {
+		t.Fatalf("settings = %#v", got)
+	}
+}

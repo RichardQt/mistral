@@ -84,3 +84,38 @@ func TestProbeActionsAgainstUpstream(t *testing.T) {
 		t.Fatalf("state leaks the api key: %s", body)
 	}
 }
+
+func TestNormalizedConfigCredentialCheckWorks(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer mstrl_live" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"bad key"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"m1"}]}`))
+	}))
+	defer server.Close()
+	clearAllCredentialHealth()
+	// This is the shape CPA produces after yaml.v3 round-trips the plugin block.
+	raw := "enabled: true\npriority: 100\nbase-url: \"" + server.URL + "/v1\"\nlog-retention: 200\n" +
+		"stream-idle-seconds: 0\nfailover: true\nignore-proxy: false\ncooldown-seconds: 60\n" +
+		"credentials:\n    - id: \"s1\"\n      label: \"s1\"\n      api-key: \"mstrl_live\"\n      disabled: false\n      priority: 0\n" +
+		"models:\n    - id: \"m\"\n      upstream-id: \"m1\"\n      reasoning: \"\"\n"
+	storeSettings(parseSettings([]byte(raw)))
+	t.Cleanup(func() {
+		storeSettings(defaultSettings())
+		clearAllCredentialHealth()
+	})
+	current := loadSettings()
+	if len(current.Credentials) != 1 || current.Credentials[0].APIKey != "mstrl_live" {
+		t.Fatalf("credentials = %#v", current.Credentials)
+	}
+	status, body := handleAdmin([]byte(`{"action":"test-credential","id":"s1"}`), "")
+	probe := map[string]any{}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		t.Fatalf("decode: %v body=%s", err, body)
+	}
+	if status != 200 || probe["ok"] != true {
+		t.Fatalf("test-credential failed: status=%d body=%s", status, body)
+	}
+}
