@@ -22,7 +22,7 @@ Connect Mistral to CLIProxyAPI (CPA). Clients keep using CPA's address and key.
 - Fetches the upstream model list and creates mappings from selected models, so model IDs do not have to be typed by hand.
 - Sends a small request for a single mapping to check the key, model ID, and reasoning setting together.
 - Records request logs and statistics: first-byte time, total time, output speed, cache hits, and failover attempts.
-- Maintains a stable `prompt_cache_key` so Mistral can reuse prompt prefixes; long agent conversations and batch jobs sharing a system prompt get cache hits instead of scattering across upstream nodes.
+- Maintains a stable `prompt_cache_key` and mirrors it in the `x-affinity` header so Mistral's load balancer keeps one conversation on the cache node that already holds its prefix. The key comes from the client when present, otherwise from the conversation root (instructions plus first user message), so turns and compaction replays of the same history keep hitting the same node.
 - Cancels streaming requests that stop producing bytes for too long.
 - Optionally ignores CPA's global proxy when the host transport cannot reach the upstream directly.
 - Runs the console in English or Chinese, follows the CPA language on first load, and keeps a manual language switch.

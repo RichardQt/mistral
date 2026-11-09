@@ -255,14 +255,15 @@ func modelsJSON() []byte {
 
 func execute(request []byte, stream bool) []byte {
 	var req struct {
-		Model           string         `json:"Model"`
-		Format          string         `json:"Format"`
-		SourceFormat    string         `json:"SourceFormat"`
-		Payload         []byte         `json:"Payload"`
-		OriginalRequest []byte         `json:"OriginalRequest"`
-		Metadata        map[string]any `json:"Metadata"`
-		StreamID        string         `json:"stream_id"`
-		HostCallbackID  string         `json:"host_callback_id"`
+		Model           string              `json:"Model"`
+		Format          string              `json:"Format"`
+		SourceFormat    string              `json:"SourceFormat"`
+		Payload         []byte              `json:"Payload"`
+		OriginalRequest []byte              `json:"OriginalRequest"`
+		Metadata        map[string]any      `json:"Metadata"`
+		Headers         map[string][]string `json:"Headers"`
+		StreamID        string              `json:"stream_id"`
+		HostCallbackID  string              `json:"host_callback_id"`
 	}
 	if err := json.Unmarshal(request, &req); err != nil {
 		return errorEnvelope("bad_request", err.Error(), http.StatusBadRequest)
@@ -289,9 +290,16 @@ func execute(request []byte, stream bool) []byte {
 	if reasoning != "" {
 		payload = forceEffort(payload, reasoning)
 	}
-	payload, cacheKeySource := applyPromptCacheKey(payload, req.OriginalRequest, req.Metadata, upstream)
+	payload, cacheKey, cacheKeySource := applyPromptCacheKey(payload, req.OriginalRequest, req.Metadata, req.Headers, upstream)
 	started := time.Now()
-	entry := requestLog{Model: req.Model, Upstream: upstream, Stream: stream, CacheKeySource: cacheKeySource}
+	entry := requestLog{
+		Model:          req.Model,
+		Upstream:       upstream,
+		Stream:         stream,
+		CacheKeySource: cacheKeySource,
+		CacheKey:       shortHash(cacheKey),
+		PrefixHash:     payloadPrefixHash(payload),
+	}
 	upstreamURL := strings.TrimRight(current.BaseURL, "/") + chatPath
 	var lastStatus int
 	var lastErr string
@@ -305,6 +313,9 @@ func execute(request []byte, stream bool) []byte {
 		}
 		if stream {
 			headers["Accept"] = []string{"text/event-stream"}
+		}
+		if affinity := affinityHeaderValue(cacheKey); affinity != "" {
+			headers[promptCacheAffinityHeader] = []string{affinity}
 		}
 		for attempt := 0; attempt < maxUpstreamAttempts; attempt++ {
 			if attempt > 0 {

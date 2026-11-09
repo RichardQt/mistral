@@ -387,6 +387,8 @@ const STRINGS = {
     noLogs: '还没有请求记录。',
     probeTag: '测试',
     cacheKeyClient: '缓存键来自客户端 prompt_cache_key',
+    cacheKeyAffinity: '缓存键来自客户端 x-affinity 头',
+    cacheKeyRoot: '缓存键按会话内容根（system 指令 + 首条用户消息）生成',
     cacheKeyInstructions: '缓存键按 system 指令生成',
     cacheKeySession: '缓存键来自 CPA 会话身份',
     cacheKeyUser: '缓存键按首条用户消息生成',
@@ -570,6 +572,8 @@ const STRINGS = {
     noLogs: 'No requests logged yet.',
     probeTag: 'Test',
     cacheKeyClient: 'Cache key from client prompt_cache_key',
+    cacheKeyAffinity: 'Cache key from the client x-affinity header',
+    cacheKeyRoot: 'Cache key from the conversation root (instructions + first user message)',
     cacheKeyInstructions: 'Cache key derived from system instructions',
     cacheKeySession: 'Cache key from CPA session identity',
     cacheKeyUser: 'Cache key derived from first user message',
@@ -1158,6 +1162,8 @@ document.querySelector('#log-limit').onchange = loadLogs;
 function cacheKeyHint(item) {
   const source = item.cache_key_source || '';
   if (source === 'client') return t('cacheKeyClient');
+  if (source === 'affinity') return t('cacheKeyAffinity');
+  if (source === 'root') return t('cacheKeyRoot');
   if (source === 'instructions') return t('cacheKeyInstructions');
   if (source === 'session') return t('cacheKeySession');
   if (source === 'user') return t('cacheKeyUser');

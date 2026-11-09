@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -26,6 +28,8 @@ type requestLog struct {
 	TokensPerSecond  float64 `json:"tokens_per_second,omitempty"`
 	CacheHitRate     float64 `json:"cache_hit_rate,omitempty"`
 	CacheKeySource   string  `json:"cache_key_source,omitempty"`
+	CacheKey         string  `json:"cache_key,omitempty"`
+	PrefixHash       string  `json:"prefix_hash,omitempty"`
 	Probe            bool    `json:"probe,omitempty"`
 	Error            string  `json:"error,omitempty"`
 }
@@ -194,4 +198,29 @@ func joinLines(lines []string) string {
 		out += line + "\n"
 	}
 	return out
+}
+
+// shortHash fingerprints a cache key for the console. The raw key can be a
+// client session id, so only a stable digest is logged.
+func shortHash(value string) string {
+	if value == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:6])
+}
+
+// payloadPrefixHash fingerprints the start of the upstream body. Comparing it
+// across requests separates a routing miss (same prefix, another cache node)
+// from a client-side prefix change (the conversation history itself moved).
+func payloadPrefixHash(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	window := payload
+	if len(window) > 64*1024 {
+		window = window[:64*1024]
+	}
+	sum := sha256.Sum256(window)
+	return hex.EncodeToString(sum[:6])
 }
