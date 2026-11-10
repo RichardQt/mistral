@@ -168,3 +168,91 @@ func TestEffortFollowsModelLadder(t *testing.T) {
 		}
 	}
 }
+
+// Agents put Anthropic's thinking switch and per-message ids on an OpenAI
+// request; Mistral answers 422 extra_forbidden for both, and a long session
+// carries an id on every message.
+func TestRequestDropsThinkingSwitch(t *testing.T) {
+	in := []byte(`{
+		"model":"mistral-large-4",
+		"thinking":{"type":"enabled"},
+		"output_config":{"effort":"high"},
+		"cache_control":{"type":"ephemeral"},
+		"messages":[
+			{"role":"user","content":"hi","id":"user-1"},
+			{"role":"assistant","content":"ok","id":"asst-1"},
+			{"role":"user","content":"again"}
+		]}`)
+	out, ok := rewriteRequestBody(in, []string{"*"}, "mistral-large-4", "mistral-large-4")
+	if !ok {
+		t.Fatal("expected rewrite")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"thinking", "output_config", "cache_control"} {
+		if _, exists := doc[key]; exists {
+			t.Fatalf("%s survived", key)
+		}
+	}
+	if doc["reasoning_effort"] != "high" {
+		t.Fatalf("thinking switch was not carried over: %#v", doc["reasoning_effort"])
+	}
+	for i, item := range doc["messages"].([]any) {
+		if _, exists := item.(map[string]any)["id"]; exists {
+			t.Fatalf("message %d kept its id", i)
+		}
+	}
+}
+
+func TestRequestDropsDisabledThinkingWithoutEffort(t *testing.T) {
+	in := []byte(`{"model":"m","thinking":{"type":"disabled"},"messages":[{"role":"user","content":"hi"}]}`)
+	out, ok := rewriteRequestBody(in, []string{"*"}, "m", "m")
+	if !ok {
+		t.Fatal("expected rewrite")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := doc["thinking"]; exists {
+		t.Fatal("thinking survived")
+	}
+	if doc["reasoning_effort"] != "none" {
+		t.Fatalf("disabled switch should not raise effort, got %#v", doc["reasoning_effort"])
+	}
+}
+
+// magpie writes mime_type beside image_url; Mistral answers 422 string_type
+// for the whole message when a part carries a key of its own.
+func TestRequestDropsExtraContentPartKeys(t *testing.T) {
+	in := []byte(`{"model":"mistral-large-4","messages":[
+		{"role":"user","content":[
+			{"type":"text","text":"what is this","cache_control":{"type":"ephemeral"}},
+			{"type":"image_url","image_url":{"url":"https://example.test/a.png"},"mime_type":"image/png"}
+		]}]}`)
+	out, ok := rewriteRequestBody(in, []string{"*"}, "deepseek-v4-1-flash-1017", "deepseek-v4-1-flash-1017")
+	if !ok {
+		t.Fatal("expected rewrite")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	parts := doc["messages"].([]any)[0].(map[string]any)["content"].([]any)
+	image := parts[1].(map[string]any)
+	if _, exists := image["mime_type"]; exists {
+		t.Fatal("mime_type survived")
+	}
+	if image["image_url"] == nil {
+		t.Fatal("image_url was dropped")
+	}
+	text := parts[0].(map[string]any)
+	if _, exists := text["cache_control"]; exists {
+		t.Fatal("cache_control survived on a text part")
+	}
+	if text["text"] != "what is this" {
+		t.Fatalf("text changed: %#v", text["text"])
+	}
+}

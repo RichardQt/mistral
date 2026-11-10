@@ -94,6 +94,9 @@ var unsupportedTopLevelFields = []string{
 	"store", "logit_bias", "web_search", "web_search_options",
 	"continue_final_message", "prefix", "verbosity", "reasoning",
 	"text", "instructions", "input", "top_k", "prompt_mode",
+	// Anthropic-style switches agents put on an OpenAI request. Mistral knows
+	// only reasoning_effort and answers 422 extra_forbidden for these.
+	"thinking", "output_config", "cache_control",
 }
 
 // Each Mistral message role accepts its own field set; a field that belongs to
@@ -118,6 +121,18 @@ func rewriteRequestBody(body []byte, patterns []string, model, requested string)
 		if effort, ok := reasoning["effort"].(string); ok && effort != "" {
 			if _, exists := doc["reasoning_effort"]; !exists {
 				doc["reasoning_effort"] = effort
+			}
+		}
+	}
+	// Anthropic's thinking switch says on or off and carries no level, so a
+	// default stands in for a client that turned it on.
+	if thinking, ok := doc["thinking"].(map[string]any); ok {
+		if _, exists := doc["reasoning_effort"]; !exists {
+			switch thinking["type"] {
+			case "enabled":
+				doc["reasoning_effort"] = "high"
+			case "disabled":
+				doc["reasoning_effort"] = "none"
 			}
 		}
 	}
@@ -203,6 +218,14 @@ func rewriteMessage(msg map[string]any) bool {
 	return changed
 }
 
+// Each content part carries its own keys and nothing beside them: an image
+// part with mime_type next to image_url is answered 422 string_type for the
+// whole message.
+var allowedContentPartFields = map[string]map[string]bool{
+	"text":      {"type": true, "text": true},
+	"image_url": {"type": true, "image_url": true},
+}
+
 // Responses-style text parts are not part of Mistral's content unions.
 func normalizeContentParts(parts []any) bool {
 	changed := false
@@ -212,11 +235,20 @@ func normalizeContentParts(parts []any) bool {
 			continue
 		}
 		kind, _ := part["type"].(string)
-		if kind != "input_text" && kind != "output_text" {
-			continue
+		if kind == "input_text" || kind == "output_text" {
+			kind = "text"
+			part["type"] = kind
+			changed = true
 		}
-		part["type"] = "text"
-		changed = true
+		if allowed, known := allowedContentPartFields[kind]; known {
+			for key := range part {
+				if allowed[key] {
+					continue
+				}
+				delete(part, key)
+				changed = true
+			}
+		}
 	}
 	return changed
 }
