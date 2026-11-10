@@ -82,9 +82,7 @@ func defaultSettings() settings {
 			{Client: "deepseek-v4.1-flash", Upstream: "deepseek-v4-1-flash-1017"},
 			{Client: "glm-5.3", Upstream: "zai-glm-5-3"},
 			{Client: "glm-5.3-flash", Upstream: "zai-glm-5-3-flash"},
-			{Client: "mistral-vibe-cli-latest", Upstream: "mistral-vibe-cli-latest"},
-			{Client: "mistral-vibe-cli-with-tools", Upstream: "mistral-vibe-cli-with-tools"},
-			{Client: "mistral-vibe-cli-fast", Upstream: "mistral-vibe-cli-fast"},
+			{Client: "mistral-large-4-0", Upstream: "mistral-large-4-0"},
 		},
 	}
 }
