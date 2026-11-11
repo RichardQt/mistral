@@ -4,8 +4,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,25 +15,80 @@ import (
 const logPath = "/CLIProxyAPI/plugin-data/mistral/requests.jsonl"
 
 type requestLog struct {
+	RequestID        string  `json:"request_id,omitempty"`
 	Time             string  `json:"time"`
 	Model            string  `json:"model"`
 	Upstream         string  `json:"upstream"`
 	Credential       string  `json:"credential"`
+	Format           string  `json:"format,omitempty"`
+	Reasoning        string  `json:"reasoning,omitempty"`
 	Status           int     `json:"status"`
 	TTFBMs           int64   `json:"ttfb_ms"`
 	DurationMs       int64   `json:"duration_ms"`
 	Stream           bool    `json:"stream"`
 	Attempts         int     `json:"attempts,omitempty"`
+	Failover         bool    `json:"failover,omitempty"`
+	InputBytes       int64   `json:"input_bytes,omitempty"`
+	OutputBytes      int64   `json:"output_bytes,omitempty"`
 	PromptTokens     int64   `json:"prompt_tokens,omitempty"`
 	CompletionTokens int64   `json:"completion_tokens,omitempty"`
 	CachedTokens     int64   `json:"cached_tokens,omitempty"`
 	TokensPerSecond  float64 `json:"tokens_per_second,omitempty"`
 	CacheHitRate     float64 `json:"cache_hit_rate,omitempty"`
+	Cost             float64 `json:"cost,omitempty"`
 	CacheKeySource   string  `json:"cache_key_source,omitempty"`
 	CacheKey         string  `json:"cache_key,omitempty"`
 	PrefixHash       string  `json:"prefix_hash,omitempty"`
 	Probe            bool    `json:"probe,omitempty"`
 	Error            string  `json:"error,omitempty"`
+}
+
+var reqIDCounter uint64
+var reqIDMu sync.Mutex
+
+func generateRequestID() string {
+	reqIDMu.Lock()
+	reqIDCounter++
+	n := reqIDCounter
+	reqIDMu.Unlock()
+	return fmt.Sprintf("req_%x%04x", time.Now().UnixMilli(), n&0xffff)
+}
+
+func estimateCost(upstream string, prompt, cached, completion int64) float64 {
+	up := strings.ToLower(upstream)
+	var promptRate, cachedRate, completionRate float64 // per 1M tokens
+	switch {
+	case strings.Contains(up, "large"):
+		promptRate, cachedRate, completionRate = 2.0, 1.0, 6.0
+	case strings.Contains(up, "codestral"):
+		promptRate, cachedRate, completionRate = 0.3, 0.15, 0.9
+	case strings.Contains(up, "small"):
+		promptRate, cachedRate, completionRate = 0.1, 0.05, 0.3
+	case strings.Contains(up, "ministral-8b"):
+		promptRate, cachedRate, completionRate = 0.1, 0.1, 0.1
+	case strings.Contains(up, "ministral-3b"):
+		promptRate, cachedRate, completionRate = 0.04, 0.04, 0.04
+	case strings.Contains(up, "pixtral-12b"):
+		promptRate, cachedRate, completionRate = 0.15, 0.15, 0.15
+	case strings.Contains(up, "pixtral"):
+		promptRate, cachedRate, completionRate = 2.0, 1.0, 6.0
+	case strings.Contains(up, "embed"):
+		promptRate, cachedRate, completionRate = 0.1, 0.1, 0.0
+	case strings.Contains(up, "moderation"):
+		promptRate, cachedRate, completionRate = 0.1, 0.1, 0.0
+	default:
+		promptRate, cachedRate, completionRate = 1.0, 0.5, 3.0
+	}
+	uncachedPrompt := prompt - cached
+	if uncachedPrompt < 0 {
+		uncachedPrompt = 0
+	}
+	cost := (float64(uncachedPrompt)*promptRate + float64(cached)*cachedRate + float64(completion)*completionRate) / 1000000.0
+	return roundCost(cost)
+}
+
+func roundCost(value float64) float64 {
+	return float64(int64(value*1000000+0.5)) / 1000000
 }
 
 func (entry *requestLog) applyUsage(usage usageInfo, durationMs int64) {
@@ -54,6 +111,7 @@ func (entry *requestLog) applyUsage(usage usageInfo, durationMs int64) {
 	if entry.PromptTokens > 0 && entry.CachedTokens > 0 {
 		entry.CacheHitRate = roundRate(float64(entry.CachedTokens) / float64(entry.PromptTokens))
 	}
+	entry.Cost = estimateCost(entry.Upstream, entry.PromptTokens, entry.CachedTokens, entry.CompletionTokens)
 }
 
 func roundRate(value float64) float64 {
@@ -63,6 +121,12 @@ func roundRate(value float64) float64 {
 var logMu sync.Mutex
 
 func appendRequestLog(entry requestLog) {
+	if entry.RequestID == "" {
+		entry.RequestID = generateRequestID()
+	}
+	if entry.Cost == 0 && (entry.PromptTokens > 0 || entry.CompletionTokens > 0) {
+		entry.Cost = estimateCost(entry.Upstream, entry.PromptTokens, entry.CachedTokens, entry.CompletionTokens)
+	}
 	if entry.Time == "" {
 		entry.Time = time.Now().Format(time.RFC3339)
 	}
@@ -125,15 +189,25 @@ func recentLogs(limit int) []requestLog {
 }
 
 func summarizeLogs(logs []requestLog) map[string]any {
-	var requests, success, errors, streams int
-	var promptTokens, completionTokens, cachedTokens, ttfbTotal, durationTotal, generationMs int64
+	var requests, success, errors, streams, probes, retries, failovers int
+	var promptTokens, completionTokens, cachedTokens, ttfbTotal, durationTotal, generationMs, inputBytesTotal, outputBytesTotal int64
+	var totalCost float64
+	byModel := make(map[string]map[string]any)
+
 	for _, entry := range logs {
 		if entry.Probe {
+			probes++
 			continue
 		}
 		requests++
 		if entry.Stream {
 			streams++
+		}
+		if entry.Attempts > 1 {
+			retries += (entry.Attempts - 1)
+		}
+		if entry.Failover {
+			failovers++
 		}
 		if entry.Status >= 200 && entry.Status < 400 {
 			success++
@@ -149,6 +223,14 @@ func summarizeLogs(logs []requestLog) map[string]any {
 		promptTokens += entry.PromptTokens
 		completionTokens += entry.CompletionTokens
 		cachedTokens += entry.CachedTokens
+		inputBytesTotal += entry.InputBytes
+		outputBytesTotal += entry.OutputBytes
+		cost := entry.Cost
+		if cost == 0 && (entry.PromptTokens > 0 || entry.CompletionTokens > 0) {
+			cost = estimateCost(entry.Upstream, entry.PromptTokens, entry.CachedTokens, entry.CompletionTokens)
+		}
+		totalCost += cost
+
 		if entry.CompletionTokens > 0 && entry.DurationMs > 0 {
 			generation := entry.DurationMs - entry.TTFBMs
 			if generation <= 0 {
@@ -156,10 +238,45 @@ func summarizeLogs(logs []requestLog) map[string]any {
 			}
 			generationMs += generation
 		}
+
+		modelKey := entry.Model
+		if modelKey == "" {
+			modelKey = entry.Upstream
+		}
+		if modelKey != "" {
+			bm, exists := byModel[modelKey]
+			if !exists {
+				bm = map[string]any{
+					"model": modelKey, "requests": 0, "errors": 0,
+					"prompt_tokens": int64(0), "completion_tokens": int64(0), "cached_tokens": int64(0),
+					"cost": float64(0), "duration_total": int64(0), "ttfb_total": int64(0),
+					"speed_sum": float64(0), "speed_count": 0,
+				}
+				byModel[modelKey] = bm
+			}
+			bm["requests"] = bm["requests"].(int) + 1
+			if entry.Status < 200 || entry.Status >= 400 {
+				bm["errors"] = bm["errors"].(int) + 1
+			}
+			bm["prompt_tokens"] = bm["prompt_tokens"].(int64) + entry.PromptTokens
+			bm["completion_tokens"] = bm["completion_tokens"].(int64) + entry.CompletionTokens
+			bm["cached_tokens"] = bm["cached_tokens"].(int64) + entry.CachedTokens
+			bm["cost"] = roundCost(bm["cost"].(float64) + cost)
+			bm["duration_total"] = bm["duration_total"].(int64) + entry.DurationMs
+			bm["ttfb_total"] = bm["ttfb_total"].(int64) + entry.TTFBMs
+			if entry.TokensPerSecond > 0 {
+				bm["speed_sum"] = bm["speed_sum"].(float64) + entry.TokensPerSecond
+				bm["speed_count"] = bm["speed_count"].(int) + 1
+			}
+		}
 	}
 	summary := map[string]any{
 		"requests": requests, "success": success, "errors": errors, "streams": streams,
+		"probes": probes, "retries": retries, "failovers": failovers,
 		"prompt_tokens": promptTokens, "completion_tokens": completionTokens, "cached_tokens": cachedTokens,
+		"total_tokens": promptTokens + completionTokens, "total_cost": roundCost(totalCost),
+		"input_bytes": inputBytesTotal, "output_bytes": outputBytesTotal,
+		"models_breakdown": byModel,
 	}
 	if requests > 0 {
 		summary["success_rate"] = roundRate(float64(success) / float64(requests))

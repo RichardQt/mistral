@@ -98,9 +98,11 @@ func pumpDirectStream(streamID string, resp *http.Response, started time.Time, e
 	reader := bufio.NewReaderSize(resp.Body, 32*1024)
 	buf := make([]byte, 32*1024)
 	var pending []byte
+	var totalBytes int64
 	for {
 		n, err := reader.Read(buf)
 		if n > 0 {
+			totalBytes += int64(n)
 			if idleTimer != nil {
 				idleTimer.Reset(time.Duration(idle) * time.Second)
 			}
@@ -134,6 +136,7 @@ func pumpDirectStream(streamID string, resp *http.Response, started time.Time, e
 		}
 		if err == io.EOF {
 			entry.Status = http.StatusOK
+			entry.OutputBytes = totalBytes
 			entry.applyUsage(usageInfo{Prompt: entry.PromptTokens, Completion: entry.CompletionTokens, Cached: entry.CachedTokens}, entry.DurationMs)
 			appendRequestLog(entry)
 			return

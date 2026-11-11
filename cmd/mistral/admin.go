@@ -32,12 +32,15 @@ func publicState() map[string]any {
 		})
 	}
 	activeCredential, _ := current.pick()
-	logs := recentLogs(200)
-	recent := make([]requestLog, 0, 30)
-	recent = append(recent, logs...)
-	if len(recent) > 30 {
-		recent = recent[:30]
+	limit := current.LogRetention
+	if limit < 500 {
+		limit = 500
 	}
+	if limit > 5000 {
+		limit = 5000
+	}
+	logs := recentLogs(limit)
+	recent := logs
 	return map[string]any{
 		"base_url": current.BaseURL, "log_retention": current.LogRetention,
 		"stream_idle_seconds": current.StreamIdleSeconds,
@@ -86,7 +89,11 @@ func handleAdmin(body []byte, callbackID string) (int, []byte) {
 	case "", "state":
 		return 200, jsonValue(publicState())
 	case "logs":
-		logs := recentLogs(clampInt(req.Limit, 1, 500))
+		limit := req.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		logs := recentLogs(clampInt(limit, 1, 2000))
 		return 200, jsonValue(map[string]any{"logs": logs, "summary": summarizeLogs(logs)})
 	case "put-credential":
 		if status, message := putCredential(&next, req); status != 0 {

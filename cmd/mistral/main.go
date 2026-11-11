@@ -292,7 +292,15 @@ func execute(request []byte, stream bool) []byte {
 	}
 	payload, cacheKey, cacheKeySource := applyPromptCacheKey(payload, req.OriginalRequest, req.Metadata, req.Headers, upstream)
 	started := time.Now()
+	format := req.SourceFormat
+	if format == "" {
+		format = req.Format
+	}
 	entry := requestLog{
+		RequestID:      generateRequestID(),
+		Format:         format,
+		Reasoning:      reasoning,
+		InputBytes:     int64(len(payload)),
 		Model:          req.Model,
 		Upstream:       upstream,
 		Stream:         stream,
@@ -306,6 +314,9 @@ func execute(request []byte, stream bool) []byte {
 	attempts := 0
 	for index, cred := range candidates {
 		entry.Credential = cred.Label
+		if index > 0 {
+			entry.Failover = true
+		}
 		headers := map[string][]string{
 			"Authorization": {"Bearer " + cred.APIKey},
 			"Content-Type":  {"application/json"},
@@ -339,6 +350,7 @@ func execute(request []byte, stream bool) []byte {
 						rewritten = value
 					}
 					entry.Status = status
+					entry.OutputBytes = int64(len(rewritten))
 					entry.DurationMs = time.Since(started).Milliseconds()
 					entry.TTFBMs = entry.DurationMs
 					entry.applyUsage(usageFromJSON(body), entry.DurationMs)
@@ -463,8 +475,10 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 	}()
 	time.Sleep(50 * time.Millisecond)
 	var pending []byte
+	var totalBytes int64
 	for {
 		chunk, done, err := readHTTPStreamChunk(upstreamID)
+		totalBytes += int64(len(chunk))
 		if err != nil {
 			entry.Status = http.StatusBadGateway
 			entry.Error = err.Error()
@@ -498,6 +512,7 @@ func pumpUpstream(upstreamID, streamID string, started time.Time, entry requestL
 		_ = emitFrame(streamID, pending)
 	}
 	entry.Status = http.StatusOK
+	entry.OutputBytes = totalBytes
 	entry.DurationMs = time.Since(started).Milliseconds()
 	if entry.TTFBMs == 0 {
 		entry.TTFBMs = entry.DurationMs
@@ -636,8 +651,12 @@ func handleManagement(request []byte) []byte {
 	}
 	return mustOK(map[string]any{
 		"StatusCode": http.StatusOK,
-		"Headers":    map[string][]string{"content-type": {"text/html; charset=utf-8"}},
-		"Body":       []byte(consolePage()),
+		"Headers": map[string][]string{
+			"content-type":  {"text/html; charset=utf-8"},
+			"cache-control": {"no-store, max-age=0"},
+			"pragma":        {"no-cache"},
+		},
+		"Body": []byte(consolePage()),
 	})
 }
 
